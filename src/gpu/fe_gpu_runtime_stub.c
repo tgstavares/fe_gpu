@@ -1,0 +1,343 @@
+#include "fe_gpu_runtime.h"
+
+#include <string.h>
+
+static char g_last_error[256] = "CUDA backend not available in this build.";
+
+static int set_stub_error(void) {
+    const char* message = "CUDA backend not available in this build.";
+    strncpy(g_last_error, message, sizeof(g_last_error) - 1);
+    g_last_error[sizeof(g_last_error) - 1] = '\0';
+    return 1;
+}
+
+int fe_gpu_runtime_is_available(void) {
+    return 0;
+}
+
+int fe_gpu_runtime_init(int device_id, fe_gpu_device_info* info) {
+    (void)device_id;
+    if (info) {
+        memset(info, 0, sizeof(*info));
+    }
+    return set_stub_error();
+}
+
+int fe_gpu_runtime_shutdown(void) {
+    return set_stub_error();
+}
+
+int fe_gpu_runtime_malloc(void** ptr, size_t bytes) {
+    (void)bytes;
+    if (ptr) {
+        *ptr = NULL;
+    }
+    return set_stub_error();
+}
+
+int fe_gpu_runtime_free(void* ptr) {
+    (void)ptr;
+    return set_stub_error();
+}
+
+int fe_gpu_runtime_memcpy_htod(void* dst, const void* src, size_t bytes) {
+    (void)dst;
+    (void)src;
+    (void)bytes;
+    return set_stub_error();
+}
+
+int fe_gpu_runtime_memcpy_dtoh(void* dst, const void* src, size_t bytes) {
+    (void)dst;
+    (void)src;
+    (void)bytes;
+    return set_stub_error();
+}
+
+int fe_gpu_runtime_memcpy_dtod(void* dst, const void* src, size_t bytes) {
+    (void)dst;
+    (void)src;
+    (void)bytes;
+    return set_stub_error();
+}
+
+int fe_gpu_runtime_memset(void* ptr, int value, size_t bytes) {
+    (void)ptr;
+    (void)value;
+    (void)bytes;
+    return set_stub_error();
+}
+
+int fe_gpu_runtime_get_last_error(char* buffer, size_t length) {
+    if (!buffer || length == 0) {
+        return 1;
+    }
+
+    size_t msg_len = 0;
+    while (msg_len < sizeof(g_last_error) && g_last_error[msg_len] != '\0') {
+        msg_len++;
+    }
+
+    size_t copy_len = (msg_len < length - 1) ? msg_len : (length - 1);
+    memcpy(buffer, g_last_error, copy_len);
+    buffer[copy_len] = '\0';
+    return 0;
+}
+
+int fe_gpu_residual(int n_rows,
+                    int n_cols,
+                    const double* W,
+                    int ldW,
+                    const double* beta,
+                    const double* y,
+                    double* residual) {
+    (void)n_rows; (void)n_cols; (void)W; (void)ldW; (void)beta; (void)y; (void)residual;
+    return set_stub_error();
+}
+
+int fe_gpu_dot(int n_rows,
+               const double* x,
+               const double* y,
+               double* result) {
+    (void)n_rows; (void)x; (void)y; (void)result;
+    return set_stub_error();
+}
+
+int fe_gpu_cluster_scores(const double* residual,
+                          const double* W,
+                          const int* cluster_ids,
+                          int n_rows,
+                          int n_cols,
+                          int ldW,
+                          int n_clusters,
+                          double* scores) {
+    (void)residual; (void)W; (void)cluster_ids; (void)n_rows; (void)n_cols;
+    (void)ldW; (void)n_clusters; (void)scores;
+    return set_stub_error();
+}
+
+int fe_gpu_cluster_meat(int n_clusters,
+                        int n_cols,
+                        const double* scores,
+                        int ldScores,
+                        double* meat) {
+    (void)n_clusters; (void)n_cols; (void)scores; (void)ldScores; (void)meat;
+    return set_stub_error();
+}
+
+int fe_gpu_fe_accumulate(const double* y,
+                         const double* W,
+                         const int* fe_ids,
+                         size_t n_obs,
+                         int n_reg,
+                         size_t leading_dim,
+                         double* group_sum_y,
+                         double* group_sum_W,
+                         int* group_counts) {
+    (void)y;
+    (void)W;
+    (void)fe_ids;
+    (void)n_obs;
+    (void)n_reg;
+    (void)leading_dim;
+    (void)group_sum_y;
+    (void)group_sum_W;
+    (void)group_counts;
+    return set_stub_error();
+}
+
+int fe_gpu_fe_compute_means(double* group_sum_y,
+                            double* group_sum_W,
+                            const int* group_counts,
+                            int n_groups,
+                            int n_reg) {
+    (void)group_sum_y;
+    (void)group_sum_W;
+    (void)group_counts;
+    (void)n_groups;
+    (void)n_reg;
+    return set_stub_error();
+}
+
+int fe_gpu_fe_subtract(double* y,
+                       double* W,
+                       const int* fe_ids,
+                       size_t n_obs,
+                       int n_reg,
+                       size_t leading_dim,
+                       const double* group_mean_y,
+                       const double* group_mean_W) {
+    (void)y;
+    (void)W;
+    (void)fe_ids;
+    (void)n_obs;
+    (void)n_reg;
+    (void)leading_dim;
+    (void)group_mean_y;
+    (void)group_mean_W;
+    return set_stub_error();
+}
+
+int fe_gpu_linalg_init(void) {
+    return set_stub_error();
+}
+
+int fe_gpu_linalg_shutdown(void) {
+    return set_stub_error();
+}
+
+int fe_gpu_syrk(int n_rows, int n_cols, double alpha, const double* W, int ldW, double beta, double* Q) {
+    (void)n_rows;
+    (void)n_cols;
+    (void)alpha;
+    (void)W;
+    (void)ldW;
+    (void)beta;
+    (void)Q;
+    return set_stub_error();
+}
+
+int fe_gpu_gemv(int n_rows, int n_cols, double alpha, const double* W, int ldW, const double* y, double beta, double* b) {
+    (void)n_rows;
+    (void)n_cols;
+    (void)alpha;
+    (void)W;
+    (void)ldW;
+    (void)y;
+    (void)beta;
+    (void)b;
+    return set_stub_error();
+}
+
+int fe_gpu_syrk_f32(int n_rows, int n_cols, float alpha, const float* W, int ldW, float beta, float* Q) {
+    (void)n_rows;
+    (void)n_cols;
+    (void)alpha;
+    (void)W;
+    (void)ldW;
+    (void)beta;
+    (void)Q;
+    return set_stub_error();
+}
+
+int fe_gpu_gemv_f32(int n_rows, int n_cols, float alpha, const float* W, int ldW, const float* y, float beta, float* b) {
+    (void)n_rows;
+    (void)n_cols;
+    (void)alpha;
+    (void)W;
+    (void)ldW;
+    (void)y;
+    (void)beta;
+    (void)b;
+    return set_stub_error();
+}
+
+int fe_gpu_residual_f32(int n_rows,
+                        int n_cols,
+                        const float* W,
+                        int ldW,
+                        const float* beta,
+                        const float* y,
+                        float* residual) {
+    (void)n_rows;
+    (void)n_cols;
+    (void)W;
+    (void)ldW;
+    (void)beta;
+    (void)y;
+    (void)residual;
+    return set_stub_error();
+}
+
+int fe_gpu_dot_f32(int n_rows, const float* x, const float* y, double* result) {
+    (void)n_rows;
+    (void)x;
+    (void)y;
+    (void)result;
+    return set_stub_error();
+}
+
+int fe_gpu_cluster_scores_f32(const float* residual,
+                              const float* W,
+                              const int* cluster_ids,
+                              int n_rows,
+                              int n_cols,
+                              int ldW,
+                              int n_clusters,
+                              float* scores) {
+    (void)residual;
+    (void)W;
+    (void)cluster_ids;
+    (void)n_rows;
+    (void)n_cols;
+    (void)ldW;
+    (void)n_clusters;
+    (void)scores;
+    return set_stub_error();
+}
+
+int fe_gpu_cluster_meat_f32(int n_clusters,
+                            int n_cols,
+                            const float* scores,
+                            int ldScores,
+                            float* meat) {
+    (void)n_clusters;
+    (void)n_cols;
+    (void)scores;
+    (void)ldScores;
+    (void)meat;
+    return set_stub_error();
+}
+
+int fe_gpu_fe_accumulate_f32(const float* y,
+                             const float* W,
+                             const int* fe_ids,
+                             size_t n_obs,
+                             int n_reg,
+                             size_t leading_dim,
+                             float* group_sum_y,
+                             float* group_sum_W,
+                             int* group_counts) {
+    (void)y;
+    (void)W;
+    (void)fe_ids;
+    (void)n_obs;
+    (void)n_reg;
+    (void)leading_dim;
+    (void)group_sum_y;
+    (void)group_sum_W;
+    (void)group_counts;
+    return set_stub_error();
+}
+
+int fe_gpu_fe_compute_means_f32(float* group_sum_y,
+                                float* group_sum_W,
+                                const int* group_counts,
+                                int n_groups,
+                                int n_reg) {
+    (void)group_sum_y;
+    (void)group_sum_W;
+    (void)group_counts;
+    (void)n_groups;
+    (void)n_reg;
+    return set_stub_error();
+}
+
+int fe_gpu_fe_subtract_f32(float* y,
+                           float* W,
+                           const int* fe_ids,
+                           size_t n_obs,
+                           int n_reg,
+                           size_t leading_dim,
+                           const float* group_mean_y,
+                           const float* group_mean_W) {
+    (void)y;
+    (void)W;
+    (void)fe_ids;
+    (void)n_obs;
+    (void)n_reg;
+    (void)leading_dim;
+    (void)group_mean_y;
+    (void)group_mean_W;
+    return set_stub_error();
+}

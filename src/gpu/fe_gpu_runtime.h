@@ -1,0 +1,138 @@
+#ifndef FE_GPU_RUNTIME_H
+#define FE_GPU_RUNTIME_H
+
+#include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#ifndef FE_GPU_NAME_LEN
+#define FE_GPU_NAME_LEN 256
+#endif
+
+typedef struct {
+    int device_id;
+    size_t total_global_mem;
+    int multiprocessor_count;
+    int major;
+    int minor;
+    char name[FE_GPU_NAME_LEN];
+} fe_gpu_device_info;
+
+int fe_gpu_runtime_is_available(void);
+int fe_gpu_runtime_init(int device_id, fe_gpu_device_info* info);
+int fe_gpu_runtime_shutdown(void);
+int fe_gpu_runtime_malloc(void** ptr, size_t bytes);
+int fe_gpu_runtime_free(void* ptr);
+int fe_gpu_runtime_memcpy_htod(void* dst, const void* src, size_t bytes);
+int fe_gpu_runtime_memcpy_dtoh(void* dst, const void* src, size_t bytes);
+int fe_gpu_runtime_memcpy_dtod(void* dst, const void* src, size_t bytes);
+int fe_gpu_runtime_memset(void* ptr, int value, size_t bytes);
+int fe_gpu_runtime_get_last_error(char* buffer, size_t length);
+
+int fe_gpu_linalg_init(void);
+int fe_gpu_linalg_shutdown(void);
+int fe_gpu_syrk(int n_rows, int n_cols, double alpha, const double* W, int ldW, double beta, double* Q);
+int fe_gpu_syrk_f32(int n_rows, int n_cols, float alpha, const float* W, int ldW, float beta, float* Q);
+int fe_gpu_gemv(int n_rows, int n_cols, double alpha, const double* W, int ldW, const double* y, double beta, double* b);
+int fe_gpu_gemv_f32(int n_rows, int n_cols, float alpha, const float* W, int ldW, const float* y, float beta, float* b);
+int fe_gpu_residual(int n_rows,
+                    int n_cols,
+                    const double* W,
+                    int ldW,
+                    const double* beta,
+                    const double* y,
+                    double* residual);
+int fe_gpu_residual_f32(int n_rows,
+                        int n_cols,
+                        const float* W,
+                        int ldW,
+                        const float* beta,
+                        const float* y,
+                        float* residual);
+int fe_gpu_dot(int n_rows,
+               const double* x,
+               const double* y,
+               double* result);
+int fe_gpu_dot_f32(int n_rows,
+                   const float* x,
+                   const float* y,
+                   double* result);
+int fe_gpu_cluster_scores(const double* residual,
+                          const double* W,
+                          const int* cluster_ids,
+                          int n_rows,
+                          int n_cols,
+                          int ldW,
+                          int n_clusters,
+                          double* scores);
+int fe_gpu_cluster_scores_f32(const float* residual,
+                              const float* W,
+                              const int* cluster_ids,
+                              int n_rows,
+                              int n_cols,
+                              int ldW,
+                              int n_clusters,
+                              float* scores);
+int fe_gpu_cluster_meat(int n_clusters,
+                        int n_cols,
+                        const double* scores,
+                        int ldScores,
+                        double* meat);
+int fe_gpu_cluster_meat_f32(int n_clusters,
+                            int n_cols,
+                            const float* scores,
+                            int ldScores,
+                            float* meat);
+
+int fe_gpu_fe_accumulate(const double* y,
+                         const double* W,
+                         const int* fe_ids,
+                         size_t n_obs,
+                         int n_reg,
+                         size_t leading_dim,
+                         double* group_sum_y,
+                         double* group_sum_W,
+                         int* group_counts);
+int fe_gpu_fe_compute_means(double* group_sum_y,
+                            double* group_sum_W,
+                            const int* group_counts,
+                            int n_groups,
+                            int n_reg);
+int fe_gpu_fe_subtract(double* y,
+                       double* W,
+                       const int* fe_ids,
+                       size_t n_obs,
+                       int n_reg,
+                       size_t leading_dim,
+                       const double* group_mean_y,
+                       const double* group_mean_W);
+int fe_gpu_fe_accumulate_f32(const float* y,
+                             const float* W,
+                             const int* fe_ids,
+                             size_t n_obs,
+                             int n_reg,
+                             size_t leading_dim,
+                             float* group_sum_y,
+                             float* group_sum_W,
+                             int* group_counts);
+int fe_gpu_fe_compute_means_f32(float* group_sum_y,
+                                float* group_sum_W,
+                                const int* group_counts,
+                                int n_groups,
+                                int n_reg);
+int fe_gpu_fe_subtract_f32(float* y,
+                           float* W,
+                           const int* fe_ids,
+                           size_t n_obs,
+                           int n_reg,
+                           size_t leading_dim,
+                           const float* group_mean_y,
+                           const float* group_mean_W);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* FE_GPU_RUNTIME_H */

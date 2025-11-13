@@ -1,0 +1,42 @@
+# Build directories
+build/
+cmake-build*/
+
+# Compiled artifacts
+*.o
+*.obj
+*.mod
+*.a
+*.so
+*.dll
+*.dylib
+*.exe
+
+# CUDA/Fortran intermediates
+*.ptx
+*.cubin
+*.fatbin
+*.device-link.o
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+
+# Generated datasets
+*.bin
+*.parquet
+*.csv
+*.tsv
+*.h5
+
+# Logs and temp files
+*.log
+*.tmp
+*.bak
+*.swp
+
+# User-specific configs
+.vscode/
+.idea/
+.DS_Store
