@@ -1,8 +1,8 @@
 module fe_pipeline
     use iso_c_binding, only: c_loc, c_null_ptr, c_associated
-    use iso_fortran_env, only: int32, int64, real32, real64
+    use iso_fortran_env, only: int32, int64, real64
     use fe_config, only: fe_runtime_config
-    use fe_types, only: fe_dataset_header, fe_host_arrays, PRECISION_FLOAT32
+    use fe_types, only: fe_dataset_header, fe_host_arrays
     use fe_gpu_data, only: fe_gpu_dataset, fe_gpu_dataset_upload, fe_gpu_dataset_destroy
     use fe_gpu_demean, only: fe_gpu_within_transform
     use fe_gpu_linalg, only: fe_gpu_linalg_initialize, fe_gpu_linalg_finalize, fe_gpu_compute_cross_products, &
@@ -14,7 +14,6 @@ module fe_pipeline
     implicit none
     intrinsic :: system_clock
     integer(int64), parameter :: REAL64_BYTES = storage_size(0.0_real64) / 8
-    integer(int64), parameter :: REAL32_BYTES = storage_size(0.0_real32) / 8
     integer(int64), parameter :: INT32_BYTES = storage_size(1_int32) / 8
     integer, parameter :: MAX_CLUSTER_DIMS = 3
     private
@@ -60,9 +59,6 @@ contains
         integer :: k, info
         integer(int64) :: bytes
         real(real64), allocatable, target :: host_Q(:, :), host_b(:)
-        logical :: use_fp32
-        integer(int64) :: scalar_bytes
-        real(real32), allocatable, target :: host_Q32(:, :), host_b32(:)
         integer, allocatable :: keep_idx(:)
         real(real64), allocatable :: Q_inv_kept(:, :)
         integer :: it0, it1, itrate
@@ -87,13 +83,6 @@ contains
         result%dof_model = 0
         result%dof_fes = 0
         result%dof_resid = 0_int64
-        result%rss = 0.0_real64
-        result%r2 = 0.0_real64
-        result%r2_adj = 0.0_real64
-        result%r2_within = 0.0_real64
-        result%f_stat = 0.0_real64
-        result%dof_model = 0
-        result%dof_resid = 0_int64
         if (allocated(result%beta)) deallocate(result%beta)
         if (allocated(result%se)) deallocate(result%se)
         if (allocated(result%cluster_fe_dims)) deallocate(result%cluster_fe_dims)
@@ -106,10 +95,6 @@ contains
             return
         end if
 
-        use_fp32 = cfg%mixed_precision
-        if (header%precision_flag == PRECISION_FLOAT32) use_fp32 = .true.
-        scalar_bytes = merge(REAL32_BYTES, REAL64_BYTES, use_fp32)
-
         d_Q%ptr = c_null_ptr
         d_Q%size_bytes = 0_int64
         d_b%ptr = c_null_ptr
@@ -118,7 +103,7 @@ contains
         result%tss_total = compute_tss(host%y, .true.)
         result%dof_fes = estimate_fe_dof(group_sizes)
 
-        call fe_gpu_dataset_upload(host, group_sizes, gpu_data, use_fp32)
+        call fe_gpu_dataset_upload(host, group_sizes, gpu_data)
         call fe_gpu_linalg_initialize()
 
         
@@ -141,31 +126,21 @@ contains
             return
         end if
 
-        bytes = int(k, int64) * int(k, int64) * scalar_bytes
+        bytes = int(k, int64) * int(k, int64) * REAL64_BYTES
         call fe_device_alloc(d_Q, bytes)
 
-        bytes = int(k, int64) * scalar_bytes
+        bytes = int(k, int64) * REAL64_BYTES
         call fe_device_alloc(d_b, bytes)
 
-        call fe_gpu_dot(gpu_data%d_y, gpu_data%d_y, gpu_data%n_obs, result%tss_within, use_fp32)
+        call fe_gpu_dot(gpu_data%d_y, gpu_data%d_y, gpu_data%n_obs, result%tss_within)
 
-        call fe_gpu_compute_cross_products(gpu_data%d_y, gpu_data%d_W, d_Q, d_b, gpu_data%n_obs, k, use_fp32)
+        call fe_gpu_compute_cross_products(gpu_data%d_y, gpu_data%d_W, d_Q, d_b, gpu_data%n_obs, k)
 
         allocate(host_Q(k, k))
         allocate(host_b(k))
 
-        if (use_fp32) then
-            allocate(host_Q32(k, k))
-            allocate(host_b32(k))
-            call fe_memcpy_dtoh(c_loc(host_Q32(1, 1)), d_Q, int(k, int64) * int(k, int64) * scalar_bytes)
-            call fe_memcpy_dtoh(c_loc(host_b32(1)), d_b, int(k, int64) * scalar_bytes)
-            host_Q = real(host_Q32, kind=real64)
-            host_b = real(host_b32, kind=real64)
-            deallocate(host_Q32, host_b32)
-        else
-            call fe_memcpy_dtoh(c_loc(host_Q(1, 1)), d_Q)
-            call fe_memcpy_dtoh(c_loc(host_b(1)), d_b)
-        end if
+        call fe_memcpy_dtoh(c_loc(host_Q(1, 1)), d_Q)
+        call fe_memcpy_dtoh(c_loc(host_b(1)), d_b)
         call symmetrize_upper(host_Q)
 
         call solve_with_column_filter(host_Q, host_b, result, keep_idx, Q_inv_kept, info)
@@ -176,7 +151,7 @@ contains
 
         call system_clock(count=it0)
         if (info == 0) then
-            call compute_standard_errors(keep_idx, Q_inv_kept, use_fp32, scalar_bytes, cfg%verbose)
+            call compute_standard_errors(keep_idx, Q_inv_kept, cfg%verbose)
             call finalize_regression_stats(result, gpu_data%n_obs, header%n_fe > 0)
         else
             deallocate(keep_idx, Q_inv_kept)
@@ -257,11 +232,9 @@ contains
             deallocate(Q_sel, b_sel, beta_sel, keep)
         end subroutine solve_with_column_filter
 
-        subroutine compute_standard_errors(idx, Q_inv_kept, use_fp32, scalar_bytes, verbose)
+        subroutine compute_standard_errors(idx, Q_inv_kept, verbose)
             integer, intent(in) :: idx(:)
             real(real64), intent(in) :: Q_inv_kept(:, :)
-            logical, intent(in) :: use_fp32
-            integer(int64), intent(in) :: scalar_bytes
             logical, intent(in) :: verbose
             type(fe_device_buffer) :: d_beta, d_residual, d_scores, d_meat, d_cluster_temp
             real(real64) :: rss, sigma2, t_start, t_end, weight
@@ -269,13 +242,11 @@ contains
             integer(int64) :: bytes_obs, bytes_reg, bytes_clusters
             integer :: n_clusters
             real(real64), allocatable, target :: meat_full(:, :)
-            real(real32), allocatable, target :: meat_full32(:, :)
             real(real64), allocatable :: meat_kept(:, :), cov_mat(:, :), cov_accum(:, :)
             real(real64), allocatable :: diag_vals(:)
             integer :: i, n_cluster_dims, mask, subset_size, subset_pos, dim_index, status_build
             integer, allocatable :: subset_dims(:)
             real(real64), allocatable, target :: beta_copy(:)
-            real(real32), allocatable, target :: beta32(:)
             integer(int32), allocatable, target :: combo_ids(:)
             logical :: has_clusters, cluster_success
             character(len=256) :: warn_msg
@@ -288,27 +259,20 @@ contains
 
             call cpu_time(t_start)
 
-            bytes_reg = int(size(result%beta), int64) * scalar_bytes
+            bytes_reg = int(size(result%beta), int64) * REAL64_BYTES
             call fe_device_alloc(d_beta, bytes_reg)
             if (size(result%beta) > 0) then
-                if (use_fp32) then
-                    allocate(beta32(size(result%beta)))
-                    beta32 = real(result%beta, kind=real32)
-                    call fe_memcpy_htod(d_beta, c_loc(beta32(1)), bytes_reg)
-                    deallocate(beta32)
-                else
-                    allocate(beta_copy(size(result%beta)))
-                    beta_copy = result%beta
-                    call fe_memcpy_htod(d_beta, c_loc(beta_copy(1)), bytes_reg)
-                    deallocate(beta_copy)
-                end if
+                allocate(beta_copy(size(result%beta)))
+                beta_copy = result%beta
+                call fe_memcpy_htod(d_beta, c_loc(beta_copy(1)), bytes_reg)
+                deallocate(beta_copy)
             end if
 
-            bytes_obs = gpu_data%n_obs * scalar_bytes
+            bytes_obs = gpu_data%n_obs * REAL64_BYTES
             call fe_device_alloc(d_residual, bytes_obs)
             call fe_gpu_compute_residual(gpu_data%d_y, gpu_data%d_W, d_beta, d_residual, gpu_data%n_obs, &
-                size(result%beta), use_fp32)
-            call fe_gpu_dot(d_residual, d_residual, gpu_data%n_obs, rss, use_fp32)
+                size(result%beta))
+            call fe_gpu_dot(d_residual, d_residual, gpu_data%n_obs, rss)
             df = max(1_int64, gpu_data%n_obs - kept)
             result%dof_resid = df
             result%rss = rss
@@ -383,25 +347,18 @@ contains
                     end if
                     call cpu_time(subset_mid)
 
-                    bytes_clusters = int(n_clusters, int64) * int(size(result%beta), int64) * scalar_bytes
+                    bytes_clusters = int(n_clusters, int64) * int(size(result%beta), int64) * REAL64_BYTES
                     call fe_device_alloc(d_scores, bytes_clusters)
                     call fe_device_memset(d_scores, 0)
                     call fe_gpu_cluster_scores(d_residual, gpu_data%d_W, ids_buffer, gpu_data%n_obs, size(result%beta), &
-                        n_clusters, d_scores, use_fp32)
+                        n_clusters, d_scores)
 
-                    bytes_reg = int(size(result%beta), int64) * int(size(result%beta), int64) * scalar_bytes
+                    bytes_reg = int(size(result%beta), int64) * int(size(result%beta), int64) * REAL64_BYTES
                     call fe_device_alloc(d_meat, bytes_reg)
-                    call fe_gpu_cluster_meat(d_scores, n_clusters, size(result%beta), d_meat, use_fp32)
+                    call fe_gpu_cluster_meat(d_scores, n_clusters, size(result%beta), d_meat)
 
                     allocate(meat_full(size(result%beta), size(result%beta)))
-                    if (use_fp32) then
-                        allocate(meat_full32(size(result%beta), size(result%beta)))
-                        call fe_memcpy_dtoh(c_loc(meat_full32(1, 1)), d_meat, bytes_reg)
-                        meat_full = real(meat_full32, kind=real64)
-                        deallocate(meat_full32)
-                    else
-                        call fe_memcpy_dtoh(c_loc(meat_full(1, 1)), d_meat)
-                    end if
+                    call fe_memcpy_dtoh(c_loc(meat_full(1, 1)), d_meat)
                     call symmetrize_upper(meat_full)
 
                     allocate(meat_kept(kept, kept))

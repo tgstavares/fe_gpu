@@ -9,7 +9,6 @@ module fe_config
         integer(int32) :: fe_max_iterations = 500
         logical :: use_gpu = .true.
         logical :: verbose = .false.
-        logical :: mixed_precision = .false.
         integer(int32), allocatable :: cluster_fe_dims(:)
     end type fe_runtime_config
 
@@ -26,7 +25,6 @@ contains
         cfg%use_gpu = .true.
         cfg%verbose = .false.
         cfg%data_path = 'data.bin'
-        cfg%mixed_precision = .false.
         allocate(cfg%cluster_fe_dims(0))
     end subroutine init_default_config
 
@@ -46,11 +44,10 @@ contains
         character(len=*), intent(in) :: cluster_str
         type(fe_runtime_config), intent(in) :: cfg
         character(len=*), parameter :: fmt = &
-            '("data_path=",A,", tol=",ES10.3,", max_iter=",I0,", use_gpu=",L1,", verbose=",L1,", cluster_fe=",A, &
-            ", mixed_precision=",L1)")'
+            '("data_path=",A,", tol=",ES10.3,", max_iter=",I0,", use_gpu=",L1,", verbose=",L1,", cluster_fe=",A,")")'
 
         write(buf, fmt) trim(cfg%data_path), cfg%fe_tolerance, cfg%fe_max_iterations, cfg%use_gpu, cfg%verbose, &
-            trim(cluster_str), cfg%mixed_precision
+            trim(cluster_str)
     end subroutine describe_to_buffer
 
     function format_cluster_dims(dims) result(out)

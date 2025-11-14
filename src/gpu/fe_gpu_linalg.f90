@@ -1,5 +1,5 @@
 module fe_gpu_linalg
-    use iso_c_binding, only: c_int, c_ptr, c_double, c_float
+    use iso_c_binding, only: c_int, c_ptr, c_double
     use iso_fortran_env, only: int64, real64
     use fe_gpu_runtime, only: fe_device_buffer, fe_gpu_check
     implicit none
@@ -33,15 +33,6 @@ module fe_gpu_linalg
             type(c_ptr), value :: Q
             integer(c_int) :: status
         end function c_fe_gpu_syrk
-        function c_fe_gpu_syrk_f32(n_rows, n_cols, alpha, W, ldW, beta, Q) bind(C, name="fe_gpu_syrk_f32") result(status)
-            import :: c_int, c_ptr, c_float
-            integer(c_int), value :: n_rows, n_cols
-            real(c_float), value :: alpha, beta
-            type(c_ptr), value :: W
-            integer(c_int), value :: ldW
-            type(c_ptr), value :: Q
-            integer(c_int) :: status
-        end function c_fe_gpu_syrk_f32
 
         function c_fe_gpu_gemv(n_rows, n_cols, alpha, W, ldW, y, beta, b) bind(C, name="fe_gpu_gemv") result(status)
             import :: c_int, c_ptr, c_double
@@ -52,15 +43,6 @@ module fe_gpu_linalg
             type(c_ptr), value :: y, b
             integer(c_int) :: status
         end function c_fe_gpu_gemv
-        function c_fe_gpu_gemv_f32(n_rows, n_cols, alpha, W, ldW, y, beta, b) bind(C, name="fe_gpu_gemv_f32") result(status)
-            import :: c_int, c_ptr, c_float
-            integer(c_int), value :: n_rows, n_cols
-            real(c_float), value :: alpha, beta
-            type(c_ptr), value :: W
-            integer(c_int), value :: ldW
-            type(c_ptr), value :: y, b
-            integer(c_int) :: status
-        end function c_fe_gpu_gemv_f32
 
         function c_fe_gpu_residual(n_rows, n_cols, W, ldW, beta, y, residual) bind(C, name="fe_gpu_residual") result(status)
             import :: c_int, c_ptr
@@ -69,13 +51,6 @@ module fe_gpu_linalg
             integer(c_int), value :: ldW
             integer(c_int) :: status
         end function c_fe_gpu_residual
-        function c_fe_gpu_residual_f32(n_rows, n_cols, W, ldW, beta, y, residual) bind(C, name="fe_gpu_residual_f32") result(status)
-            import :: c_int, c_ptr
-            integer(c_int), value :: n_rows, n_cols
-            type(c_ptr), value :: W, beta, y, residual
-            integer(c_int), value :: ldW
-            integer(c_int) :: status
-        end function c_fe_gpu_residual_f32
 
         function c_fe_gpu_dot(n_rows, x, y, result) bind(C, name="fe_gpu_dot") result(status)
             import :: c_int, c_ptr, c_double
@@ -84,13 +59,6 @@ module fe_gpu_linalg
             real(c_double), intent(out) :: result
             integer(c_int) :: status
         end function c_fe_gpu_dot
-        function c_fe_gpu_dot_f32(n_rows, x, y, result) bind(C, name="fe_gpu_dot_f32") result(status)
-            import :: c_int, c_ptr, c_double
-            integer(c_int), value :: n_rows
-            type(c_ptr), value :: x, y
-            real(c_double), intent(out) :: result
-            integer(c_int) :: status
-        end function c_fe_gpu_dot_f32
 
         function c_fe_gpu_cluster_scores(residual, W, cluster_ids, n_rows, n_cols, ldW, n_clusters, scores) &
                 bind(C, name="fe_gpu_cluster_scores") result(status)
@@ -99,13 +67,6 @@ module fe_gpu_linalg
             integer(c_int), value :: n_rows, n_cols, ldW, n_clusters
             integer(c_int) :: status
         end function c_fe_gpu_cluster_scores
-        function c_fe_gpu_cluster_scores_f32(residual, W, cluster_ids, n_rows, n_cols, ldW, n_clusters, scores) &
-                bind(C, name="fe_gpu_cluster_scores_f32") result(status)
-            import :: c_int, c_ptr
-            type(c_ptr), value :: residual, W, cluster_ids, scores
-            integer(c_int), value :: n_rows, n_cols, ldW, n_clusters
-            integer(c_int) :: status
-        end function c_fe_gpu_cluster_scores_f32
 
         function c_fe_gpu_cluster_meat(n_clusters, n_cols, scores, ldScores, meat) &
                 bind(C, name="fe_gpu_cluster_meat") result(status)
@@ -114,13 +75,6 @@ module fe_gpu_linalg
             type(c_ptr), value :: scores, meat
             integer(c_int) :: status
         end function c_fe_gpu_cluster_meat
-        function c_fe_gpu_cluster_meat_f32(n_clusters, n_cols, scores, ldScores, meat) &
-                bind(C, name="fe_gpu_cluster_meat_f32") result(status)
-            import :: c_int, c_ptr
-            integer(c_int), value :: n_clusters, n_cols, ldScores
-            type(c_ptr), value :: scores, meat
-            integer(c_int) :: status
-        end function c_fe_gpu_cluster_meat_f32
     end interface
 
 contains
@@ -137,81 +91,56 @@ contains
         call fe_gpu_check(status, 'destroying cuBLAS handle')
     end subroutine fe_gpu_linalg_finalize
 
-    subroutine fe_gpu_compute_cross_products(dataset_y, dataset_W, buffer_Q, buffer_b, n_obs, n_reg, use_fp32)
+    subroutine fe_gpu_compute_cross_products(dataset_y, dataset_W, buffer_Q, buffer_b, n_obs, n_reg)
         type(fe_device_buffer), intent(in) :: dataset_y
         type(fe_device_buffer), intent(in) :: dataset_W
         type(fe_device_buffer), intent(in) :: buffer_Q
         type(fe_device_buffer), intent(in) :: buffer_b
         integer(int64), intent(in) :: n_obs
         integer, intent(in) :: n_reg
-        logical, intent(in) :: use_fp32
         integer(c_int) :: status
         real(c_double) :: one, zero
-        real(c_float) :: one_f32, zero_f32
 
         if (n_reg == 0 .or. n_obs <= 0_int64) return
 
         one = real(1.0_real64, kind=c_double)
         zero = real(0.0_real64, kind=c_double)
-        one_f32 = real(1.0_real64, kind=c_float)
-        zero_f32 = real(0.0_real64, kind=c_float)
 
-        if (use_fp32) then
-            status = c_fe_gpu_syrk_f32(int(n_obs, c_int), int(n_reg, c_int), one_f32, dataset_W%ptr, &
-                int(n_obs, c_int), zero_f32, buffer_Q%ptr)
-        else
-            status = c_fe_gpu_syrk(int(n_obs, c_int), int(n_reg, c_int), one, dataset_W%ptr, int(n_obs, c_int), zero, buffer_Q%ptr)
-        end if
+        status = c_fe_gpu_syrk(int(n_obs, c_int), int(n_reg, c_int), one, dataset_W%ptr, int(n_obs, c_int), zero, buffer_Q%ptr)
         call fe_gpu_check(status, 'computing Q = W^T W via cuBLAS')
 
-        if (use_fp32) then
-            status = c_fe_gpu_gemv_f32(int(n_obs, c_int), int(n_reg, c_int), one_f32, dataset_W%ptr, int(n_obs, c_int), &
-                dataset_y%ptr, zero_f32, buffer_b%ptr)
-        else
-            status = c_fe_gpu_gemv(int(n_obs, c_int), int(n_reg, c_int), one, dataset_W%ptr, int(n_obs, c_int), &
-                dataset_y%ptr, zero, buffer_b%ptr)
-        end if
+        status = c_fe_gpu_gemv(int(n_obs, c_int), int(n_reg, c_int), one, dataset_W%ptr, int(n_obs, c_int), &
+            dataset_y%ptr, zero, buffer_b%ptr)
         call fe_gpu_check(status, 'computing b = W^T y via cuBLAS')
     end subroutine fe_gpu_compute_cross_products
 
-    subroutine fe_gpu_compute_residual(dataset_y, dataset_W, beta, residual, n_obs, n_reg, use_fp32)
+    subroutine fe_gpu_compute_residual(dataset_y, dataset_W, beta, residual, n_obs, n_reg)
         type(fe_device_buffer), intent(in) :: dataset_y
         type(fe_device_buffer), intent(in) :: dataset_W
         type(fe_device_buffer), intent(in) :: beta
         type(fe_device_buffer), intent(in) :: residual
         integer(int64), intent(in) :: n_obs
         integer, intent(in) :: n_reg
-        logical, intent(in) :: use_fp32
         integer(c_int) :: status
 
         if (n_reg == 0 .or. n_obs <= 0_int64) return
-        if (use_fp32) then
-            status = c_fe_gpu_residual_f32(int(n_obs, c_int), int(n_reg, c_int), dataset_W%ptr, int(n_obs, c_int), &
-                beta%ptr, dataset_y%ptr, residual%ptr)
-        else
-            status = c_fe_gpu_residual(int(n_obs, c_int), int(n_reg, c_int), dataset_W%ptr, int(n_obs, c_int), &
-                beta%ptr, dataset_y%ptr, residual%ptr)
-        end if
+        status = c_fe_gpu_residual(int(n_obs, c_int), int(n_reg, c_int), dataset_W%ptr, int(n_obs, c_int), &
+            beta%ptr, dataset_y%ptr, residual%ptr)
         call fe_gpu_check(status, 'computing residual vector')
     end subroutine fe_gpu_compute_residual
 
-    subroutine fe_gpu_dot(vec_x, vec_y, n_elements, result, use_fp32)
+    subroutine fe_gpu_dot(vec_x, vec_y, n_elements, result)
         type(fe_device_buffer), intent(in) :: vec_x
         type(fe_device_buffer), intent(in) :: vec_y
         integer(int64), intent(in) :: n_elements
         real(real64), intent(out) :: result
-        logical, intent(in) :: use_fp32
         integer(c_int) :: status
 
-        if (use_fp32) then
-            status = c_fe_gpu_dot_f32(int(n_elements, c_int), vec_x%ptr, vec_y%ptr, result)
-        else
-            status = c_fe_gpu_dot(int(n_elements, c_int), vec_x%ptr, vec_y%ptr, result)
-        end if
+        status = c_fe_gpu_dot(int(n_elements, c_int), vec_x%ptr, vec_y%ptr, result)
         call fe_gpu_check(status, 'computing dot product')
     end subroutine fe_gpu_dot
 
-    subroutine fe_gpu_cluster_scores(residual, dataset_W, cluster_ids, n_obs, n_reg, n_clusters, scores, use_fp32)
+    subroutine fe_gpu_cluster_scores(residual, dataset_W, cluster_ids, n_obs, n_reg, n_clusters, scores)
         type(fe_device_buffer), intent(in) :: residual
         type(fe_device_buffer), intent(in) :: dataset_W
         type(fe_device_buffer), intent(in) :: cluster_ids
@@ -219,35 +148,23 @@ contains
         integer, intent(in) :: n_reg
         integer, intent(in) :: n_clusters
         type(fe_device_buffer), intent(in) :: scores
-        logical, intent(in) :: use_fp32
         integer(c_int) :: status
 
         if (n_reg == 0 .or. n_obs <= 0_int64 .or. n_clusters <= 0) return
-        if (use_fp32) then
-            status = c_fe_gpu_cluster_scores_f32(residual%ptr, dataset_W%ptr, cluster_ids%ptr, &
-                int(n_obs, c_int), int(n_reg, c_int), int(n_obs, c_int), int(n_clusters, c_int), scores%ptr)
-        else
-            status = c_fe_gpu_cluster_scores(residual%ptr, dataset_W%ptr, cluster_ids%ptr, &
-                int(n_obs, c_int), int(n_reg, c_int), int(n_obs, c_int), int(n_clusters, c_int), scores%ptr)
-        end if
+        status = c_fe_gpu_cluster_scores(residual%ptr, dataset_W%ptr, cluster_ids%ptr, &
+            int(n_obs, c_int), int(n_reg, c_int), int(n_obs, c_int), int(n_clusters, c_int), scores%ptr)
         call fe_gpu_check(status, 'accumulating cluster scores')
     end subroutine fe_gpu_cluster_scores
 
-    subroutine fe_gpu_cluster_meat(scores, n_clusters, n_reg, meat, use_fp32)
+    subroutine fe_gpu_cluster_meat(scores, n_clusters, n_reg, meat)
         type(fe_device_buffer), intent(in) :: scores
         integer, intent(in) :: n_clusters
         integer, intent(in) :: n_reg
         type(fe_device_buffer), intent(in) :: meat
-        logical, intent(in) :: use_fp32
         integer(c_int) :: status
 
         if (n_reg == 0 .or. n_clusters <= 0) return
-        if (use_fp32) then
-            status = c_fe_gpu_cluster_meat_f32(int(n_clusters, c_int), int(n_reg, c_int), scores%ptr, &
-                int(n_clusters, c_int), meat%ptr)
-        else
-            status = c_fe_gpu_cluster_meat(int(n_clusters, c_int), int(n_reg, c_int), scores%ptr, int(n_clusters, c_int), meat%ptr)
-        end if
+        status = c_fe_gpu_cluster_meat(int(n_clusters, c_int), int(n_reg, c_int), scores%ptr, int(n_clusters, c_int), meat%ptr)
         call fe_gpu_check(status, 'forming clustered meat matrix')
     end subroutine fe_gpu_cluster_meat
 

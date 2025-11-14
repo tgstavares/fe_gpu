@@ -46,8 +46,6 @@ contains
                 if (idx > argc) call fail_option('--cluster-fe requires a fixed-effect dimension index (1-based)')
                 call get_command_argument(idx, value)
                 call append_cluster_dimensions(cfg, trim(value))
-            case ('--mixed-precision')
-                cfg%mixed_precision = .true.
             case ('--cpu-only')
                 cfg%use_gpu = .false.
             case ('--gpu')
@@ -81,7 +79,6 @@ contains
         write(error_unit, '(A)') '      --fe-tol <float>     Convergence tolerance for FE solver (default: 1e-6)'
         write(error_unit, '(A)') '      --fe-max-iters <int> Maximum FE iterations (default: 500)'
         write(error_unit, '(A)') '      --cluster-fe <list>  Cluster SEs by FE dimensions (comma-separated list, 1-based)'
-        write(error_unit, '(A)') '      --mixed-precision    Use mixed-precision GPU data path'
         write(error_unit, '(A)') '      --cpu-only           Disable GPU acceleration'
         write(error_unit, '(A)') '      --gpu                Force GPU usage when available'
         write(error_unit, '(A)') '      --verbose            Enable verbose logging'

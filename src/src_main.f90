@@ -149,10 +149,10 @@ contains
         call log_info(trim(msg))
 
         print*, ""
-        call log_info('    Coefficient          Estimate            StdErr           t-stat      Pr(>|t|)      ' // &
-            'Lower 95%      Upper 95%')
-        call log_info('  -------------   ---------------   ---------------   -------------   ----------   ' // &
-            '---------------   ---------------')
+        call log_info('    Coefficient          Estimate            StdErr            t-stat          Pr(>|t|)' // &
+            '         Lower 95%        Upper 95%')
+        call log_info('  -------------   ---------------   ---------------   ---------------   ---------------' // &
+            '   ---------------   ---------------')
         do i = 1, size(est%beta)
             if (est%se(i) > 0.0_real64) then
                 t_stat = est%beta(i) / est%se(i)
@@ -162,18 +162,21 @@ contains
             p_value = erfc(abs(t_stat) * INV_SQRT2)
             lower_ci = est%beta(i) - Z_CRIT * est%se(i)
             upper_ci = est%beta(i) + Z_CRIT * est%se(i)
-            write(msg, '(A12,I3,3X,ES15.6,3X,ES15.6,3X,ES12.5,3X,ES10.3,3X,ES15.6,3X,ES15.6)') &
+            write(msg, '(A12,I3,3X,ES15.6,3X,ES15.6,3X,ES15.6,3X,ES15.6,3X,ES15.6,3X,ES15.6)') &
                 'beta:', i, est%beta(i), est%se(i), t_stat, p_value, lower_ci, upper_ci
             call log_info(trim(msg))
         end do
+        call log_info('  -------------   ---------------   ---------------   ---------------   ---------------' // &
+            '   ---------------   ---------------')
         print*, ""
 
-        write(msg, '("dof (model): ",I0,", dof (residuals): ",I0)') est%dof_model, est%dof_resid
+        write(msg, '("  dof (model): ",I0,", dof (residuals): ",I0)') est%dof_model, est%dof_resid
         call log_info(trim(msg))
-        write(msg, '("R^2=",F8.5,", R^2 adj=",F8.5,", R^2 within=",F8.5)') est%r2, est%r2_adj, est%r2_within
+        write(msg, '("  R^2=",F8.5,", R^2 adj=",F8.5,", R^2 within=",F8.5)') est%r2, est%r2_adj, est%r2_within
         call log_info(trim(msg))
-        write(msg, '("F-statistic=",ES12.5)') est%f_stat
+        write(msg, '("  F-statistic=",ES12.5)') est%f_stat
         call log_info(trim(msg))
+        print*, ""
     end subroutine report_results
 
     subroutine log_fe_dimensions(groups)

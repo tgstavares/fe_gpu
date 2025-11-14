@@ -333,44 +333,4 @@ int fe_gpu_fe_subtract(double* y,
     return fe_gpu_fe_subtract_impl(y, W, fe_ids, n_obs, n_reg, leading_dim, group_mean_y, group_mean_W);
 }
 
-int fe_gpu_fe_accumulate_f32(const float* y,
-                             const float* W,
-                             const int* fe_ids,
-                             size_t n_obs,
-                             int n_reg,
-                             size_t leading_dim,
-                             float* group_sum_y,
-                             float* group_sum_W,
-                             int* group_counts) {
-    if (n_obs == 0) {
-        return store_success();
-    }
-    return fe_gpu_fe_accumulate_impl(y, W, fe_ids, n_obs, n_reg, leading_dim, group_sum_y, group_sum_W, group_counts);
-}
-
-int fe_gpu_fe_compute_means_f32(float* group_sum_y,
-                                float* group_sum_W,
-                                const int* group_counts,
-                                int n_groups,
-                                int n_reg) {
-    if (n_groups == 0) {
-        return store_success();
-    }
-    return fe_gpu_fe_compute_means_impl(group_sum_y, group_sum_W, group_counts, n_groups, n_reg);
-}
-
-int fe_gpu_fe_subtract_f32(float* y,
-                           float* W,
-                           const int* fe_ids,
-                           size_t n_obs,
-                           int n_reg,
-                           size_t leading_dim,
-                           const float* group_mean_y,
-                           const float* group_mean_W) {
-    if (n_obs == 0) {
-        return store_success();
-    }
-    return fe_gpu_fe_subtract_impl(y, W, fe_ids, n_obs, n_reg, leading_dim, group_mean_y, group_mean_W);
-}
-
 }  // extern "C"
