@@ -154,12 +154,14 @@ contains
             call compute_standard_errors(keep_idx, Q_inv_kept, cfg%verbose)
             call finalize_regression_stats(result, gpu_data%n_obs, header%n_fe > 0)
         else
-            deallocate(keep_idx, Q_inv_kept)
+            if (allocated(keep_idx)) deallocate(keep_idx)
+            if (allocated(Q_inv_kept)) deallocate(Q_inv_kept)
             call cleanup()
             return
         end if
 
-        deallocate(keep_idx, Q_inv_kept)
+        if (allocated(keep_idx)) deallocate(keep_idx)
+        if (allocated(Q_inv_kept)) deallocate(Q_inv_kept)
         call cleanup()
 
         call system_clock(count=it1)
