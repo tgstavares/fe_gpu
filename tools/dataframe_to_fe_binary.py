@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
+import os
 import pathlib
 import sys
-from typing import Iterable, List, Sequence
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Sequence
 
 import numpy as np
 import pandas as pd
@@ -44,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--drop-missing", action="store_true", help="Drop rows with missing values in relevant columns")
     parser.add_argument("--summary", action="store_true", help="Print dataset summary as JSON")
     parser.add_argument("--verbose", action="store_true", help="Log progress and timings")
+    parser.add_argument("--workers", type=int, default=None, help="Number of CPU workers (default: all available cores)")
     return parser.parse_args()
 
 def determine_format(path: pathlib.Path, requested: str) -> str:
@@ -76,6 +79,21 @@ def relabel_ids(series: pd.Series) -> np.ndarray:
         raise ValueError(f"Column {series.name} contains missing values after cleaning")
     return codes.astype(np.int32, copy=False) + 1
 
+
+def parallel_relabel(df: pd.DataFrame, columns: Sequence[str], workers: int, vlog) -> List[np.ndarray]:
+    if len(columns) == 0:
+        return []
+    if workers <= 1 or len(columns) == 1:
+        return [relabel_ids(df[col]) for col in columns]
+
+    results = {col: None for col in columns}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map = {executor.submit(relabel_ids, df[col]): col for col in columns}
+        for future in as_completed(future_map):
+            col = future_map[future]
+            results[col] = future.result()
+    return [results[col] for col in columns]
+
 def write_binary(path: pathlib.Path,
                  y: np.ndarray,
                  X: np.ndarray,
@@ -93,32 +111,37 @@ def write_binary(path: pathlib.Path,
     has_weights = 1 if weights is not None else 0
     precision_flag = PRECISION_FLAGS[precision]
 
-    dtype = np.float32 if precision == "float32" else np.float64
-    y_bytes = np.asarray(y, dtype=dtype).tobytes(order="C")
-    W_bytes = np.asarray(X, dtype=dtype, order="F").tobytes(order="F")
-    fe_bytes = fe_ids.astype(np.int32, copy=False).tobytes(order="C")
-    cluster_bytes = None if cluster is None else cluster.astype(np.int32, copy=False).tobytes(order="C")
-    weight_bytes = None if weights is None else np.asarray(weights, dtype=dtype).tobytes(order="C")
+    float_dtype = np.dtype("<f4") if precision == "float32" else np.dtype("<f8")
+    int_dtype = np.dtype("<i4")
+
+    y_arr = np.asarray(y, dtype=float_dtype)
+    X_arr = np.asarray(X, dtype=float_dtype, order="F")
+    fe_arr = np.asarray(fe_ids, dtype=int_dtype)
+    cluster_arr = None if cluster is None else np.asarray(cluster, dtype=int_dtype)
+    weight_arr = None if weights is None else np.asarray(weights, dtype=float_dtype)
 
     with path.open("wb") as f:
         f.write(struct.pack(HEADER_FORMAT, n_obs, n_reg, n_fe, has_cluster, has_weights))
         f.write(struct.pack("<i", precision_flag))
-        f.write(y_bytes)
-        f.write(W_bytes)
-        f.write(fe_bytes)
+        y_arr.tofile(f)
+        X_arr.tofile(f)
+        fe_arr.tofile(f)
         if has_cluster:
-            f.write(cluster_bytes)
+            cluster_arr.tofile(f)
         if has_weights:
-            f.write(weight_bytes)
+            weight_arr.tofile(f)
 
 def main() -> None:
     args = parse_args()
-    import time
     t0 = time.perf_counter()
 
     def vlog(message: str) -> None:
         if args.verbose:
             print(message, file=sys.stderr)
+
+    cpu_total = os.cpu_count() or 1
+    workers = args.workers if args.workers and args.workers > 0 else cpu_total
+    vlog(f"Detected {cpu_total} logical CPUs; using {workers} worker(s)")
 
     all_columns: List[str] = [args.y] + args.x + args.fe
     if args.cluster:
@@ -128,19 +151,26 @@ def main() -> None:
 
     fmt = determine_format(args.input, args.input_format)
     vlog(f"Loading {args.input} (format={fmt})")
+    t_load0 = time.perf_counter()
     df = load_dataframe(args.input, fmt=fmt, columns=all_columns)
-    vlog(f"Loaded {len(df):,} rows")
+    t_load1 = time.perf_counter()
+    vlog(f"Loaded {len(df):,} rows in {t_load1 - t_load0:.3f} s")
 
-    required = set(all_columns)
-    subset_cols = list(required)
+    subset_cols = list(dict.fromkeys(all_columns))
     if args.drop_missing:
-        before = len(df)
-        df = df.dropna(subset=subset_cols)
-        dropped = before - len(df)
-        if dropped:
-            vlog(f"Dropped {dropped} rows containing missing values")
-    elif df[subset_cols].isna().any().any():
-        raise ValueError("Dataset contains missing values; rerun with --drop-missing")
+        t_clean0 = time.perf_counter()
+        missing_mask = df[subset_cols].isna().any(axis=1)
+        missing_rows = int(missing_mask.sum())
+        if missing_rows:
+            df = df.loc[~missing_mask].reset_index(drop=True)
+            vlog(f"Dropped {missing_rows} rows containing missing values")
+        else:
+            vlog("No missing values detected; skipping drop")
+        t_clean1 = time.perf_counter()
+        vlog(f"Missing-value cleanup took {t_clean1 - t_clean0:.3f} s")
+    else:
+        if df[subset_cols].isna().any().any():
+            raise ValueError("Dataset contains missing values; rerun with --drop-missing")
 
     df = df.reset_index(drop=True)
     n = len(df)
@@ -148,12 +178,15 @@ def main() -> None:
         raise ValueError("No observations remain after processing")
 
     vlog("Building numeric arrays")
+    t_arrays0 = time.perf_counter()
     y = df[args.y].to_numpy(dtype=np.float64, copy=False)
     X = np.asfortranarray(df[args.x].to_numpy(dtype=np.float64, copy=False))
-    fe_arrays = []
-    for col in args.fe:
-        fe_arrays.append(relabel_ids(df[col]))
+    start_factor = time.perf_counter()
+    fe_arrays = parallel_relabel(df, args.fe, workers, vlog)
     fe_ids = np.stack(fe_arrays, axis=0)
+    t_arrays1 = time.perf_counter()
+    vlog(f"Relabeled FE columns in {time.perf_counter() - start_factor:.3f} s")
+    vlog(f"Finished numeric array build in {t_arrays1 - t_arrays0:.3f} s")
 
     cluster_arr = None
     if args.cluster:
@@ -164,7 +197,10 @@ def main() -> None:
         weight_arr = df[args.weights].to_numpy(dtype=np.float64, copy=False)
 
     vlog(f"Writing binary output to {args.output}")
+    t_write0 = time.perf_counter()
     write_binary(args.output, y, X, fe_ids, cluster=cluster_arr, weights=weight_arr, precision=args.precision)
+    t_write1 = time.perf_counter()
+    vlog(f"Wrote binary file in {t_write1 - t_write0:.3f} s")
 
     if args.summary:
         info = {
