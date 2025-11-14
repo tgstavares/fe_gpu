@@ -116,7 +116,7 @@ def write_binary(path: pathlib.Path,
 
     y_arr = np.asarray(y, dtype=float_dtype)
     X_arr = np.asarray(X, dtype=float_dtype, order="F")
-    fe_arr = np.asarray(fe_ids, dtype=int_dtype, order="F")
+    fe_arr = np.asarray(fe_ids, dtype=int_dtype)
     cluster_arr = None if cluster is None else np.asarray(cluster, dtype=int_dtype)
     weight_arr = None if weights is None else np.asarray(weights, dtype=float_dtype)
 
@@ -125,7 +125,8 @@ def write_binary(path: pathlib.Path,
         f.write(struct.pack("<i", precision_flag))
         y_arr.tofile(f)
         X_arr.T.tofile(f)
-        fe_arr.T.tofile(f)
+        for d in range(fe_arr.shape[0]):
+            fe_arr[d, :].tofile(f)
         if has_cluster:
             cluster_arr.tofile(f)
         if has_weights:
