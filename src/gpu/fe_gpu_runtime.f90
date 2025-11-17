@@ -1,5 +1,5 @@
 module fe_gpu_runtime
-    use iso_c_binding, only: c_ptr, c_null_ptr, c_int, c_size_t, c_char, c_null_char, c_associated
+    use iso_c_binding, only: c_ptr, c_null_ptr, c_int, c_size_t, c_char, c_null_char, c_associated, c_long_long, c_loc
     use iso_fortran_env, only: int64, int32
     use fe_logging, only: log_info, log_error
     implicit none
@@ -49,6 +49,7 @@ module fe_gpu_runtime
     public :: fe_gpu_backend_available
     public :: fe_gpu_check
     public :: fe_gpu_copy_columns
+    public :: fe_gpu_build_multi_cluster_ids
 
     interface
         function c_fe_gpu_runtime_is_available() bind(C, name="fe_gpu_runtime_is_available") result(flag)
@@ -128,6 +129,18 @@ module fe_gpu_runtime
             integer(c_int), intent(in) :: indices(*)
             integer(c_int) :: status
         end function c_fe_gpu_copy_columns
+
+        function c_fe_gpu_build_multi_cluster_ids(fe_ptrs, strides, n_dims, n_obs, out_ids, out_clusters) &
+                bind(C, name="fe_gpu_build_multi_cluster_ids") result(status)
+            import :: c_ptr, c_int, c_long_long
+            type(c_ptr), value :: fe_ptrs
+            type(c_ptr), value :: strides
+            integer(c_int), value :: n_dims
+            integer(c_long_long), value :: n_obs
+            type(c_ptr), value :: out_ids
+            type(c_ptr), value :: out_clusters
+            integer(c_int) :: status
+        end function c_fe_gpu_build_multi_cluster_ids
     end interface
 
 contains
@@ -223,6 +236,32 @@ contains
             int(n_rows, c_int), dest%ptr, int(n_rows, c_int), int(dest_offset, c_int))
         call fe_gpu_check(status, 'copying GPU columns')
     end subroutine fe_gpu_copy_columns
+
+    subroutine fe_gpu_build_multi_cluster_ids(ptrs, strides, n_dims, n_obs, ids_buffer, n_clusters, status)
+        type(c_ptr), intent(in), target :: ptrs(:)
+        integer(int64), intent(in), target :: strides(:)
+        integer, intent(in) :: n_dims
+        integer(int64), intent(in) :: n_obs
+        type(fe_device_buffer), intent(in) :: ids_buffer
+        integer, intent(out) :: n_clusters
+        integer, intent(out) :: status
+        integer(int32), target :: n_clusters32
+
+        if (n_dims <= 0) then
+            status = -1
+            n_clusters = 0
+            return
+        end if
+
+        n_clusters32 = 0_int32
+        status = c_fe_gpu_build_multi_cluster_ids(c_loc(ptrs(1)), c_loc(strides(1)), int(n_dims, c_int), &
+            int(n_obs, c_long_long), ids_buffer%ptr, c_loc(n_clusters32))
+        if (status == 0) then
+            n_clusters = n_clusters32
+        else
+            n_clusters = 0
+        end if
+    end subroutine fe_gpu_build_multi_cluster_ids
 
     subroutine fe_memcpy_htod(dest, src_ptr, nbytes)
         type(fe_device_buffer), intent(in) :: dest

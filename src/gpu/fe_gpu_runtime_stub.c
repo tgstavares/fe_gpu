@@ -213,6 +213,21 @@ int fe_gpu_copy_columns(const double* src,
     return set_stub_error();
 }
 
+int fe_gpu_build_multi_cluster_ids(const void* const* fe_ptrs,
+                                   const unsigned long long* strides,
+                                   int n_dims,
+                                   long long n_obs,
+                                   int* out_ids,
+                                   int* out_n_clusters) {
+    (void)fe_ptrs;
+    (void)strides;
+    (void)n_dims;
+    (void)n_obs;
+    (void)out_ids;
+    (void)out_n_clusters;
+    return set_stub_error();
+}
+
 int fe_gpu_linalg_init(void) {
     return set_stub_error();
 }

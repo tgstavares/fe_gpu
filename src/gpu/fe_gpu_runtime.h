@@ -111,6 +111,12 @@ int fe_gpu_copy_columns(const double* src,
                         double* dst,
                         int ld_dst,
                         int dest_offset);
+int fe_gpu_build_multi_cluster_ids(const void* const* fe_ptrs,
+                                   const unsigned long long* strides,
+                                   int n_dims,
+                                   long long n_obs,
+                                   int* out_ids,
+                                   int* out_n_clusters);
 
 #ifdef __cplusplus
 }

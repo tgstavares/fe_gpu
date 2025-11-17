@@ -1,5 +1,5 @@
 module fe_pipeline
-    use iso_c_binding, only: c_loc, c_null_ptr, c_associated
+    use iso_c_binding, only: c_ptr, c_loc, c_null_ptr, c_associated
     use iso_fortran_env, only: int32, int64, real64
     use fe_config, only: fe_runtime_config
     use fe_types, only: fe_dataset_header, fe_host_arrays
@@ -8,7 +8,7 @@ module fe_pipeline
     use fe_gpu_linalg, only: fe_gpu_linalg_initialize, fe_gpu_linalg_finalize, fe_gpu_compute_cross_products, &
         fe_gpu_compute_residual, fe_gpu_dot, fe_gpu_cluster_scores, fe_gpu_cluster_meat, fe_gpu_cross_product, fe_gpu_matmul
     use fe_gpu_runtime, only: fe_device_buffer, fe_device_alloc, fe_device_free, fe_memcpy_dtoh, fe_memcpy_htod, &
-        fe_device_memset, fe_gpu_copy_columns
+        fe_device_memset, fe_gpu_copy_columns, fe_gpu_build_multi_cluster_ids
     use fe_solver, only: chol_solve_and_invert
     use fe_logging, only: log_warn, log_info
     use fe_cluster_utils, only: build_cluster_ids
@@ -62,6 +62,7 @@ contains
         integer :: k, info, i
         integer(int64) :: bytes
         real(real64), allocatable, target :: host_Q(:, :), host_b(:)
+        real(real64), allocatable :: variance_diag(:)
         real(real64), allocatable, target :: host_WW(:, :), host_Wy(:)
         integer, allocatable :: keep_idx(:)
         real(real64), allocatable :: Q_inv_kept(:, :)
@@ -158,9 +159,14 @@ contains
             call fe_memcpy_dtoh(c_loc(host_WW(1, 1)), d_Q)
             call fe_memcpy_dtoh(c_loc(host_Wy(1)), d_b)
             call symmetrize_upper(host_WW)
+            allocate(variance_diag(k))
+            do i = 1, k
+                variance_diag(i) = host_WW(i, i)
+            end do
         else
             allocate(host_WW(0, 0))
             allocate(host_Wy(0))
+            allocate(variance_diag(0))
         end if
 
         allocate(host_Q(k, k))
@@ -219,7 +225,7 @@ contains
             call build_ols_normal_equations(host_Q, host_b)
         end if
 
-        call solve_with_column_filter(host_Q, host_b, result, keep_idx, Q_inv_kept, info)
+        call solve_with_column_filter(host_Q, host_b, variance_diag, result, keep_idx, Q_inv_kept, info)
         result%solver_info = info
 
         call system_clock(count=it1)
@@ -340,9 +346,10 @@ contains
             if (allocated(proj_matrix)) deallocate(proj_matrix)
         end subroutine build_iv_normal_equations
 
-        subroutine solve_with_column_filter(Q_full, b_full, est, idx_out, Q_inv, info_out)
+        subroutine solve_with_column_filter(Q_full, b_full, variance_diag, est, idx_out, Q_inv, info_out)
             real(real64), intent(inout) :: Q_full(:, :)
             real(real64), intent(in) :: b_full(:)
+            real(real64), intent(in) :: variance_diag(:)
             type(fe_estimation_result), intent(inout) :: est
             integer, allocatable, intent(out) :: idx_out(:)
             real(real64), allocatable, intent(out) :: Q_inv(:, :)
@@ -354,7 +361,11 @@ contains
 
             diag_max = 0.0_real64
             do i = 1, size(b_full)
-                diag_val = abs(Q_full(i, i))
+                if (size(variance_diag) >= i) then
+                    diag_val = abs(variance_diag(i))
+                else
+                    diag_val = abs(Q_full(i, i))
+                end if
                 if (diag_val > diag_max) diag_max = diag_val
             end do
             diag_max = max(diag_max, 1.0_real64)
@@ -363,7 +374,12 @@ contains
             allocate(keep(size(b_full)))
             keep = .true.
             do i = 1, size(b_full)
-                if (abs(Q_full(i, i)) <= tol) keep(i) = .false.
+                if (size(variance_diag) >= i) then
+                    diag_val = abs(variance_diag(i))
+                else
+                    diag_val = abs(Q_full(i, i))
+                end if
+                if (diag_val <= tol) keep(i) = .false.
             end do
 
             kept = count(keep)
@@ -428,7 +444,7 @@ contains
             real(real64) :: subset_start, subset_mid, subset_end
             character(len=64) :: subset_label
             type(fe_device_buffer) :: reg_matrix
-            logical :: use_projected
+            logical :: use_projected, used_gpu_ids
 
             kept = size(idx)
             if (allocated(result%se)) result%se = 0.0_real64
@@ -512,25 +528,39 @@ contains
                         min_cluster_size = min(min_cluster_size, n_clusters)
                         ids_buffer = gpu_data%fe_dims(dim_index)%fe_ids
                     else
-                        if (.not. allocated(combo_ids)) allocate(combo_ids(int(gpu_data%n_obs)))
-                        call build_cluster_ids(host%fe_ids, group_sizes, subset_dims, combo_ids, n_clusters, status_build)
-                        if (status_build /= 0) then
-                            call log_warn('Unable to build cluster identifiers for requested subset; skipping cluster SEs.')
-                            cluster_success = .false.
-                            deallocate(subset_dims)
-                            exit
+                        used_gpu_ids = .false.
+                        call build_gpu_cluster_ids_helper(gpu_data, subset_dims, group_sizes, d_cluster_temp, n_clusters, &
+                            status_build)
+                        if (status_build == 0 .and. n_clusters > 0) then
+                            min_cluster_size = min(min_cluster_size, n_clusters)
+                            ids_buffer = d_cluster_temp
+                            used_gpu_ids = .true.
+                        else
+                            if (c_associated(d_cluster_temp%ptr)) then
+                                call fe_device_free(d_cluster_temp)
+                                d_cluster_temp%ptr = c_null_ptr
+                                d_cluster_temp%size_bytes = 0_int64
+                            end if
+                            if (.not. allocated(combo_ids)) allocate(combo_ids(int(gpu_data%n_obs)))
+                            call build_cluster_ids(host%fe_ids, group_sizes, subset_dims, combo_ids, n_clusters, status_build)
+                            if (status_build /= 0) then
+                                call log_warn('Unable to build cluster identifiers for requested subset; skipping cluster SEs.')
+                                cluster_success = .false.
+                                deallocate(subset_dims)
+                                exit
+                            end if
+                            if (n_clusters <= 0) then
+                                call log_warn('Cluster subset produced zero groups; skipping cluster SEs.')
+                                cluster_success = .false.
+                                deallocate(subset_dims)
+                                exit
+                            end if
+                            min_cluster_size = min(min_cluster_size, n_clusters)
+                            bytes_clusters = gpu_data%n_obs * INT32_BYTES
+                            call fe_device_alloc(d_cluster_temp, bytes_clusters)
+                            call fe_memcpy_htod(d_cluster_temp, c_loc(combo_ids(1)), bytes_clusters)
+                            ids_buffer = d_cluster_temp
                         end if
-                        if (n_clusters <= 0) then
-                            call log_warn('Cluster subset produced zero groups; skipping cluster SEs.')
-                            cluster_success = .false.
-                            deallocate(subset_dims)
-                            exit
-                        end if
-                        min_cluster_size = min(min_cluster_size, n_clusters)
-                        bytes_clusters = gpu_data%n_obs * INT32_BYTES
-                        call fe_device_alloc(d_cluster_temp, bytes_clusters)
-                        call fe_memcpy_htod(d_cluster_temp, c_loc(combo_ids(1)), bytes_clusters)
-                        ids_buffer = d_cluster_temp
                     end if
                     call cpu_time(subset_mid)
 
@@ -602,6 +632,71 @@ contains
             result%time_se = t_end - t_start
         end subroutine compute_standard_errors
 
+        subroutine build_gpu_cluster_ids_helper(dataset, subset_dims, group_sizes_local, ids_buf, n_clusters, status)
+            type(fe_gpu_dataset), intent(in) :: dataset
+            integer, intent(in) :: subset_dims(:)
+            integer, intent(in) :: group_sizes_local(:)
+            type(fe_device_buffer), intent(inout) :: ids_buf
+            integer, intent(out) :: n_clusters
+            integer, intent(out) :: status
+            integer :: subset_size, i, dim_index
+            integer(int64), allocatable, target :: stride_vals(:)
+            type(c_ptr), allocatable, target :: ptrs(:)
+            integer(int64) :: stride_accum, dim_size
+            integer(int64), parameter :: KEY_LIMIT = 2_int64 ** 60
+            integer(int64) :: bytes_needed
+
+            subset_size = size(subset_dims)
+            if (subset_size <= 1) then
+                status = -1
+                n_clusters = 0
+                return
+            end if
+
+            allocate(stride_vals(subset_size))
+            stride_accum = 1_int64
+            do i = 1, subset_size
+                dim_index = subset_dims(i)
+                if (dim_index < 1 .or. dim_index > dataset%n_fe) then
+                    status = 1
+                    n_clusters = 0
+                    deallocate(stride_vals)
+                    return
+                end if
+                dim_size = int(group_sizes_local(dim_index), int64)
+                if (dim_size <= 0_int64) then
+                    status = 2
+                    n_clusters = 0
+                    deallocate(stride_vals)
+                    return
+                end if
+                stride_vals(i) = stride_accum
+                if (dim_size > 0_int64 .and. stride_accum > KEY_LIMIT / dim_size) then
+                    status = 3
+                    n_clusters = 0
+                    deallocate(stride_vals)
+                    return
+                end if
+                stride_accum = stride_accum * dim_size
+            end do
+
+            allocate(ptrs(subset_size))
+            do i = 1, subset_size
+                ptrs(i) = dataset%fe_dims(subset_dims(i))%fe_ids%ptr
+            end do
+
+            bytes_needed = dataset%n_obs * INT32_BYTES
+            call fe_device_alloc(ids_buf, bytes_needed)
+            call fe_gpu_build_multi_cluster_ids(ptrs, stride_vals, subset_size, dataset%n_obs, ids_buf, n_clusters, status)
+            if (status /= 0) then
+                call fe_device_free(ids_buf)
+                n_clusters = 0
+            end if
+
+            deallocate(ptrs)
+            deallocate(stride_vals)
+        end subroutine build_gpu_cluster_ids_helper
+
         subroutine initialize_cluster_dims(requested, n_fe, output)
             integer(int32), intent(in) :: requested(:)
             integer, intent(in) :: n_fe
@@ -667,6 +762,9 @@ contains
             call fe_gpu_linalg_finalize()
             if (allocated(host_Q)) deallocate(host_Q)
             if (allocated(host_b)) deallocate(host_b)
+            if (allocated(host_WW)) deallocate(host_WW)
+            if (allocated(host_Wy)) deallocate(host_Wy)
+            if (allocated(variance_diag)) deallocate(variance_diag)
         end subroutine cleanup
 
         subroutine symmetrize_upper(mat)
