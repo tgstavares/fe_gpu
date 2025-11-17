@@ -240,9 +240,10 @@ contains
             logical, intent(in) :: verbose
             type(fe_device_buffer) :: d_beta, d_residual, d_scores, d_meat, d_cluster_temp
             real(real64) :: rss, sigma2, t_start, t_end, weight
-            integer :: df, kept
+            integer :: kept, param_count, intercept_count
+            integer(int64) :: df
             integer(int64) :: bytes_obs, bytes_reg, bytes_clusters
-            integer :: n_clusters
+            integer :: n_clusters, min_cluster_size
             real(real64), allocatable, target :: meat_full(:, :)
             real(real64), allocatable :: meat_kept(:, :), cov_mat(:, :), cov_accum(:, :)
             real(real64), allocatable :: diag_vals(:)
@@ -275,7 +276,9 @@ contains
             call fe_gpu_compute_residual(gpu_data%d_y, gpu_data%d_W, d_beta, d_residual, gpu_data%n_obs, &
                 size(result%beta))
             call fe_gpu_dot(d_residual, d_residual, gpu_data%n_obs, rss)
-            df = max(1_int64, gpu_data%n_obs - kept)
+            intercept_count = 1
+            param_count = max(0, result%dof_model) + max(0, result%dof_fes) + intercept_count
+            df = max(1_int64, gpu_data%n_obs - int(param_count, int64))
             result%dof_resid = df
             result%rss = rss
             sigma2 = rss / real(df, real64)
@@ -290,6 +293,7 @@ contains
                 end do
             else
                 n_cluster_dims = size(result%cluster_fe_dims)
+                min_cluster_size = huge(0)
                 allocate(cov_accum(kept, kept))
                 cov_accum = 0.0_real64
                 d_cluster_temp%ptr = c_null_ptr
@@ -326,6 +330,7 @@ contains
                             deallocate(subset_dims)
                             exit
                         end if
+                        min_cluster_size = min(min_cluster_size, n_clusters)
                         ids_buffer = gpu_data%fe_dims(dim_index)%fe_ids
                     else
                         if (.not. allocated(combo_ids)) allocate(combo_ids(int(gpu_data%n_obs)))
@@ -342,6 +347,7 @@ contains
                             deallocate(subset_dims)
                             exit
                         end if
+                        min_cluster_size = min(min_cluster_size, n_clusters)
                         bytes_clusters = gpu_data%n_obs * INT32_BYTES
                         call fe_device_alloc(d_cluster_temp, bytes_clusters)
                         call fe_memcpy_htod(d_cluster_temp, c_loc(combo_ids(1)), bytes_clusters)
@@ -391,6 +397,9 @@ contains
                     do i = 1, kept
                         result%se(idx(i)) = sqrt(max(0.0_real64, cov_accum(i, i)))
                     end do
+                    if (min_cluster_size < huge(0)) then
+                        result%dof_resid = max(1_int64, int(min_cluster_size, int64) - 1_int64)
+                    end if
                 else
                     call log_warn('Cluster-robust SEs failed; falling back to homoskedastic estimates.')
                     if (allocated(result%cluster_fe_dims)) then

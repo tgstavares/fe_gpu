@@ -174,7 +174,7 @@ contains
         call log_info(trim(msg))
         write(msg, '("  R^2=",F8.5,", R^2 adj=",F8.5,", R^2 within=",F8.5)') est%r2, est%r2_adj, est%r2_within
         call log_info(trim(msg))
-        write(msg, '("  F-statistic=",ES12.5)') est%f_stat
+        write(msg, '("  F-statistic=",ES12.5," (df1=",I0,", df2=",I0,")")') est%f_stat, est%dof_model, est%dof_resid
         call log_info(trim(msg))
         print*, ""
     end subroutine report_results
