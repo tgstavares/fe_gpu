@@ -10,12 +10,12 @@ import pathlib
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Sequence
+from typing import List, Sequence, Optional
 
 import numpy as np
 import pandas as pd
 
-HEADER_FORMAT = "<qiiii"
+HEADER_FORMAT = "<qiiiii"
 PRECISION_FLAGS = {
     "float64": 0,
     "float32": 1,
@@ -26,6 +26,14 @@ def parse_columns(value: str, *, allow_empty: bool = False) -> List[str]:
     if not items and not allow_empty:
         raise argparse.ArgumentTypeError("At least one column must be provided")
     return items
+
+def parse_optional_columns(value: str) -> List[str]:
+    if value is None:
+        return []
+    value = value.strip()
+    if not value:
+        return []
+    return parse_columns(value, allow_empty=True)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -40,6 +48,8 @@ def parse_args() -> argparse.Namespace:
                         help="Comma-separated list of regressors")
     parser.add_argument("--fe", required=True, type=parse_columns,
                         help="Comma-separated list of fixed-effect id columns (order matters)")
+    parser.add_argument("--iv", type=parse_optional_columns, default=[],
+                        help="Comma-separated list of instrumental variables (optional)")
     parser.add_argument("--cluster", default=None, help="Optional column for cluster-robust SE ids")
     parser.add_argument("--weights", default=None, help="Optional column for observation weights")
     parser.add_argument("--precision", choices=list(PRECISION_FLAGS), default="float64")
@@ -99,13 +109,15 @@ def write_binary(path: pathlib.Path,
                  X: np.ndarray,
                  fe_ids: np.ndarray,
                  *,
-                 cluster: np.ndarray | None,
-                 weights: np.ndarray | None,
+                 instruments: Optional[np.ndarray],
+                 cluster: Optional[np.ndarray],
+                 weights: Optional[np.ndarray],
                  precision: str) -> None:
     import struct
 
     n_obs = y.shape[0]
     n_reg = X.shape[1]
+    n_instr = 0 if instruments is None else instruments.shape[1]
     n_fe = fe_ids.shape[0]
     has_cluster = 1 if cluster is not None else 0
     has_weights = 1 if weights is not None else 0
@@ -116,15 +128,20 @@ def write_binary(path: pathlib.Path,
 
     y_arr = np.asarray(y, dtype=float_dtype)
     X_arr = np.asarray(X, dtype=float_dtype, order="F")
+    Z_arr = None
+    if instruments is not None and n_instr > 0:
+        Z_arr = np.asarray(instruments, dtype=float_dtype, order="F")
     fe_arr = np.asarray(fe_ids, dtype=int_dtype)
     cluster_arr = None if cluster is None else np.asarray(cluster, dtype=int_dtype)
     weight_arr = None if weights is None else np.asarray(weights, dtype=float_dtype)
 
     with path.open("wb") as f:
-        f.write(struct.pack(HEADER_FORMAT, n_obs, n_reg, n_fe, has_cluster, has_weights))
+        f.write(struct.pack(HEADER_FORMAT, n_obs, n_reg, n_instr, n_fe, has_cluster, has_weights))
         f.write(struct.pack("<i", precision_flag))
         y_arr.tofile(f)
         X_arr.T.tofile(f)
+        if Z_arr is not None:
+            Z_arr.T.tofile(f)
         for d in range(fe_arr.shape[0]):
             fe_arr[d, :].tofile(f)
         if has_cluster:
@@ -144,7 +161,7 @@ def main() -> None:
     workers = args.workers if args.workers and args.workers > 0 else cpu_total
     vlog(f"Detected {cpu_total} logical CPUs; using {workers} worker(s)")
 
-    all_columns: List[str] = [args.y] + args.x + args.fe
+    all_columns: List[str] = [args.y] + args.x + args.fe + args.iv
     if args.cluster:
         all_columns.append(args.cluster)
     if args.weights:
@@ -182,6 +199,9 @@ def main() -> None:
     t_arrays0 = time.perf_counter()
     y = df[args.y].to_numpy(dtype=np.float64, copy=False)
     X = np.asfortranarray(df[args.x].to_numpy(dtype=np.float64, copy=False))
+    Z = None
+    if args.iv:
+        Z = np.asfortranarray(df[args.iv].to_numpy(dtype=np.float64, copy=False))
     start_factor = time.perf_counter()
     fe_arrays = parallel_relabel(df, args.fe, workers, vlog)
     fe_ids = np.stack(fe_arrays, axis=0)
@@ -199,7 +219,7 @@ def main() -> None:
 
     vlog(f"Writing binary output to {args.output}")
     t_write0 = time.perf_counter()
-    write_binary(args.output, y, X, fe_ids, cluster=cluster_arr, weights=weight_arr, precision=args.precision)
+    write_binary(args.output, y, X, fe_ids, instruments=Z, cluster=cluster_arr, weights=weight_arr, precision=args.precision)
     t_write1 = time.perf_counter()
     vlog(f"Wrote binary file in {t_write1 - t_write0:.3f} s")
 
@@ -208,6 +228,7 @@ def main() -> None:
             "n_obs": int(n),
             "n_regressors": int(X.shape[1]),
             "n_fe_dims": int(fe_ids.shape[0]),
+            "n_instruments": int(0 if Z is None else Z.shape[1]),
             "clustered": args.cluster is not None,
             "weights": args.weights is not None,
             "precision": args.precision,

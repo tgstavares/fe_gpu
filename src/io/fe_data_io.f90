@@ -5,7 +5,8 @@ module fe_data_io
     implicit none
     private
 
-    integer(int64), parameter :: HEADER_BASE_BYTES = 8_int64 + 4_int64 * 4_int64
+    integer(int64), parameter :: HEADER_BASE_BYTES_NEW = 8_int64 + 5_int64 * 4_int64
+    integer(int64), parameter :: HEADER_BASE_BYTES_OLD = 8_int64 + 4_int64 * 4_int64
     integer(int64), parameter :: INT32_BYTES = 4_int64
     integer(int64), parameter :: REAL32_BYTES = 4_int64
     integer(int64), parameter :: REAL64_BYTES = 8_int64
@@ -28,7 +29,7 @@ contains
             call fail('Dataset file not found: ' // trim(path))
         end if
 
-        if (file_size < HEADER_BASE_BYTES) then
+        if (file_size < HEADER_BASE_BYTES_OLD) then
             call fail('File too small to contain required header: ' // trim(path))
         end if
 
@@ -43,6 +44,9 @@ contains
 
         call read_numeric_vector(unit, header%n_obs, header%precision_flag, host%y)
         call read_numeric_matrix(unit, header%n_obs, header%n_regressors, header%precision_flag, host%W)
+        if (header%n_instruments > 0) then
+            call read_numeric_matrix(unit, header%n_obs, header%n_instruments, header%precision_flag, host%Z)
+        end if
         call read_fe_ids(unit, header, host)
         if (header%has_cluster) then
             call read_int_vector(unit, header%n_obs, host%cluster)
@@ -60,6 +64,7 @@ contains
         type(fe_host_arrays), intent(inout) :: host
         if (allocated(host%y)) deallocate(host%y)
         if (allocated(host%W)) deallocate(host%W)
+        if (allocated(host%Z)) deallocate(host%Z)
         if (allocated(host%fe_ids)) deallocate(host%fe_ids)
         if (allocated(host%cluster)) deallocate(host%cluster)
         if (allocated(host%weights)) deallocate(host%weights)
@@ -69,11 +74,15 @@ contains
         integer, intent(in) :: unit
         integer(int64), intent(in) :: file_size
         type(fe_dataset_header), intent(inout) :: header
-        integer(int32) :: tmp_i32
+        type(fe_dataset_header) :: header_new, header_old
+        integer(int32) :: tmp_vals(4)
         integer :: ios
-        integer(int64) :: total_bytes_32, total_bytes_64
-        integer(int64) :: expected_total
+        integer(int64) :: total_new_64, total_new_32, total_old_64, total_old_32
+        integer(int64) :: base_bytes, expected_total
+        logical :: match_new, match_old
+        integer(int32) :: tmp_i32
 
+        ! First pass: read assuming new-format header to determine layout.
         read(unit, iostat=ios) header%n_obs
         call ensure_io_success(ios, 'reading N')
         call require_positive_int64(header%n_obs, 'N')
@@ -82,25 +91,84 @@ contains
         call ensure_io_success(ios, 'reading K')
         call require_nonnegative_int32(header%n_regressors, 'K')
 
-        read(unit, iostat=ios) header%n_fe
-        call ensure_io_success(ios, 'reading n_fe')
-        call require_nonnegative_int32(header%n_fe, 'n_fe')
+        read(unit, iostat=ios) tmp_vals
+        call ensure_io_success(ios, 'reading header metadata')
 
-        read(unit, iostat=ios) tmp_i32
-        call ensure_io_success(ios, 'reading has_cluster flag')
-        header%has_cluster = (tmp_i32 /= 0)
+        header_new = header
+        header_new%n_instruments = tmp_vals(1)
+        header_new%n_fe = tmp_vals(2)
+        header_new%has_cluster = (tmp_vals(3) /= 0)
+        header_new%has_weights = (tmp_vals(4) /= 0)
 
-        read(unit, iostat=ios) tmp_i32
-        call ensure_io_success(ios, 'reading has_weights flag')
-        header%has_weights = (tmp_i32 /= 0)
+        header_old = header
+        header_old%n_instruments = 0
+        header_old%n_fe = tmp_vals(1)
+        header_old%has_cluster = (tmp_vals(2) /= 0)
+        header_old%has_weights = (tmp_vals(3) /= 0)
 
-        total_bytes_64 = HEADER_BASE_BYTES + compute_data_bytes(header, REAL64_BYTES)
-        total_bytes_32 = HEADER_BASE_BYTES + compute_data_bytes(header, REAL32_BYTES)
+        total_new_64 = HEADER_BASE_BYTES_NEW + compute_data_bytes(header_new, REAL64_BYTES)
+        total_new_32 = HEADER_BASE_BYTES_NEW + compute_data_bytes(header_new, REAL32_BYTES)
+        total_old_64 = HEADER_BASE_BYTES_OLD + compute_data_bytes(header_old, REAL64_BYTES)
+        total_old_32 = HEADER_BASE_BYTES_OLD + compute_data_bytes(header_old, REAL32_BYTES)
 
-        if (file_size == total_bytes_64) then
+        match_new = (file_size == total_new_64) .or. (file_size == total_new_32) .or. &
+            (file_size == total_new_64 + INT32_BYTES) .or. (file_size == total_new_32 + INT32_BYTES)
+        match_old = (file_size == total_old_64) .or. (file_size == total_old_32) .or. &
+            (file_size == total_old_64 + INT32_BYTES) .or. (file_size == total_old_32 + INT32_BYTES)
+
+        if (.not. match_new .and. .not. match_old) then
+            match_new = .true.
+        end if
+
+        rewind(unit)
+
+        if (match_new) then
+            header = header_new
+            base_bytes = HEADER_BASE_BYTES_NEW
+            read(unit, iostat=ios) header%n_obs
+            call ensure_io_success(ios, 'reading N')
+            call require_positive_int64(header%n_obs, 'N')
+            read(unit, iostat=ios) header%n_regressors
+            call ensure_io_success(ios, 'reading K')
+            call require_nonnegative_int32(header%n_regressors, 'K')
+            read(unit, iostat=ios) header%n_instruments
+            call ensure_io_success(ios, 'reading L (instruments)')
+            call require_nonnegative_int32(header%n_instruments, 'L')
+            read(unit, iostat=ios) header%n_fe
+            call ensure_io_success(ios, 'reading n_fe')
+            call require_nonnegative_int32(header%n_fe, 'n_fe')
+            read(unit, iostat=ios) tmp_i32
+            header%has_cluster = (tmp_i32 /= 0)
+            read(unit, iostat=ios) tmp_i32
+            header%has_weights = (tmp_i32 /= 0)
+        else if (match_old) then
+            header = header_old
+            base_bytes = HEADER_BASE_BYTES_OLD
+            read(unit, iostat=ios) header%n_obs
+            call ensure_io_success(ios, 'reading N')
+            call require_positive_int64(header%n_obs, 'N')
+            read(unit, iostat=ios) header%n_regressors
+            call ensure_io_success(ios, 'reading K')
+            call require_nonnegative_int32(header%n_regressors, 'K')
+            header%n_instruments = 0
+            read(unit, iostat=ios) header%n_fe
+            call ensure_io_success(ios, 'reading n_fe')
+            call require_nonnegative_int32(header%n_fe, 'n_fe')
+            read(unit, iostat=ios) tmp_i32
+            header%has_cluster = (tmp_i32 /= 0)
+            read(unit, iostat=ios) tmp_i32
+            header%has_weights = (tmp_i32 /= 0)
+        else
+            call fail('Unable to determine dataset header format')
+        end if
+
+        total_new_64 = base_bytes + compute_data_bytes(header, REAL64_BYTES)
+        total_new_32 = base_bytes + compute_data_bytes(header, REAL32_BYTES)
+
+        if (file_size == total_new_64) then
             header%precision_flag = PRECISION_FLOAT64
             return
-        else if (file_size == total_bytes_32) then
+        else if (file_size == total_new_32) then
             header%precision_flag = PRECISION_FLOAT32
             return
         end if
@@ -111,9 +179,9 @@ contains
 
         select case (header%precision_flag)
         case (PRECISION_FLOAT64)
-            expected_total = HEADER_BASE_BYTES + INT32_BYTES + compute_data_bytes(header, REAL64_BYTES)
+            expected_total = base_bytes + INT32_BYTES + compute_data_bytes(header, REAL64_BYTES)
         case (PRECISION_FLOAT32)
-            expected_total = HEADER_BASE_BYTES + INT32_BYTES + compute_data_bytes(header, REAL32_BYTES)
+            expected_total = base_bytes + INT32_BYTES + compute_data_bytes(header, REAL32_BYTES)
         case default
             call fail('Unsupported precision flag value: ' // trim(int_to_string(tmp_i32)))
         end select
@@ -140,6 +208,12 @@ contains
             allocate(host%W(n_obs_i, n_reg_i))
         else
             allocate(host%W(n_obs_i, 0))
+        end if
+
+        if (header%n_instruments > 0) then
+            allocate(host%Z(n_obs_i, header%n_instruments))
+        else
+            allocate(host%Z(n_obs_i, 0))
         end if
 
         if (n_fe_i > 0) then
@@ -258,14 +332,16 @@ contains
     integer(int64) function compute_data_bytes(header, value_bytes) result(total)
         type(fe_dataset_header), intent(in) :: header
         integer(int64), intent(in) :: value_bytes
-        integer(int64) :: n_obs64, n_reg64, n_fe64
+        integer(int64) :: n_obs64, n_reg64, n_fe64, n_instr64
 
         n_obs64 = header%n_obs
         n_reg64 = int(header%n_regressors, int64)
         n_fe64 = int(header%n_fe, int64)
+        n_instr64 = int(header%n_instruments, int64)
 
         total = 0_int64
         total = total + n_obs64 * (1_int64 + n_reg64) * value_bytes
+        if (n_instr64 > 0_int64) total = total + n_obs64 * n_instr64 * value_bytes
         if (header%has_weights) total = total + n_obs64 * value_bytes
         total = total + n_fe64 * n_obs64 * INT32_BYTES
         if (header%has_cluster) total = total + n_obs64 * INT32_BYTES

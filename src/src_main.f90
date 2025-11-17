@@ -133,6 +133,13 @@ contains
             est%se = 0.0_real64
         end if
 
+        if (est%is_iv) then
+            write(msg, '("Estimator: 2SLS (IV) with ",I0," instruments")') max(0, est%n_instruments)
+        else
+            msg = 'Estimator: OLS'
+        end if
+        call log_info(trim(msg))
+
         if (allocated(est%cluster_fe_dims) .and. size(est%cluster_fe_dims) > 0) then
             cluster_list = '['
             do j = 1, size(est%cluster_fe_dims)

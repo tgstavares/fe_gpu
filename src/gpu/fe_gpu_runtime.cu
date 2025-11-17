@@ -39,12 +39,15 @@ int store_cuda_error(cudaError_t err, const char* context) {
 template <typename T>
 __global__ void fe_accumulate_kernel(const T* __restrict__ y,
                                      const T* __restrict__ W,
+                                     const T* __restrict__ Z,
                                      const int* __restrict__ fe_ids,
                                      size_t n_obs,
-                                     int n_reg,
+                                     int n_reg_W,
+                                     int n_reg_Z,
                                      size_t leading_dim,
                                      T* group_sum_y,
                                      T* group_sum_W,
+                                     T* group_sum_Z,
                                      int* group_counts) {
     size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (idx >= n_obs) {
@@ -59,9 +62,17 @@ __global__ void fe_accumulate_kernel(const T* __restrict__ y,
     atomicAdd(&group_sum_y[gid], y[idx]);
 
     size_t offset = idx;
-    for (int k = 0; k < n_reg; ++k) {
-        atomicAdd(&group_sum_W[gid * n_reg + k], W[offset]);
+    for (int k = 0; k < n_reg_W; ++k) {
+        atomicAdd(&group_sum_W[gid * n_reg_W + k], W[offset]);
         offset += leading_dim;
+    }
+
+    if (n_reg_Z > 0 && Z && group_sum_Z) {
+        size_t offset_z = idx;
+        for (int k = 0; k < n_reg_Z; ++k) {
+            atomicAdd(&group_sum_Z[gid * n_reg_Z + k], Z[offset_z]);
+            offset_z += leading_dim;
+        }
     }
 
     atomicAdd(&group_counts[gid], 1);
@@ -70,9 +81,11 @@ __global__ void fe_accumulate_kernel(const T* __restrict__ y,
 template <typename T>
 __global__ void fe_compute_means_kernel(T* group_sum_y,
                                         T* group_sum_W,
+                                        T* group_sum_Z,
                                         const int* __restrict__ group_counts,
                                         int n_groups,
-                                        int n_reg) {
+                                        int n_reg_W,
+                                        int n_reg_Z) {
     int gid = blockIdx.x * blockDim.x + threadIdx.x;
     if (gid >= n_groups) {
         return;
@@ -82,21 +95,31 @@ __global__ void fe_compute_means_kernel(T* group_sum_y,
     T inv = (count > 0) ? T(1.0) / static_cast<T>(count) : T(0.0);
 
     group_sum_y[gid] *= inv;
-    T* row = group_sum_W + static_cast<size_t>(gid) * n_reg;
-    for (int k = 0; k < n_reg; ++k) {
+    T* row = group_sum_W + static_cast<size_t>(gid) * n_reg_W;
+    for (int k = 0; k < n_reg_W; ++k) {
         row[k] *= inv;
+    }
+
+    if (n_reg_Z > 0 && group_sum_Z) {
+        T* row_z = group_sum_Z + static_cast<size_t>(gid) * n_reg_Z;
+        for (int k = 0; k < n_reg_Z; ++k) {
+            row_z[k] *= inv;
+        }
     }
 }
 
 template <typename T>
 __global__ void fe_subtract_kernel(T* y,
                                    T* W,
+                                   T* Z,
                                    const int* __restrict__ fe_ids,
                                    size_t n_obs,
-                                   int n_reg,
+                                   int n_reg_W,
+                                   int n_reg_Z,
                                    size_t leading_dim,
                                    const T* __restrict__ group_mean_y,
-                                   const T* __restrict__ group_mean_W) {
+                                   const T* __restrict__ group_mean_W,
+                                   const T* __restrict__ group_mean_Z) {
     size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (idx >= n_obs) {
         return;
@@ -111,10 +134,19 @@ __global__ void fe_subtract_kernel(T* y,
     y[idx] -= mean_y;
 
     size_t offset = idx;
-    const T* row = group_mean_W + static_cast<size_t>(gid) * n_reg;
-    for (int k = 0; k < n_reg; ++k) {
+    const T* row = group_mean_W + static_cast<size_t>(gid) * n_reg_W;
+    for (int k = 0; k < n_reg_W; ++k) {
         W[offset] -= row[k];
         offset += leading_dim;
+    }
+
+    if (n_reg_Z > 0 && Z && group_mean_Z) {
+        size_t offset_z = idx;
+        const T* row_z = group_mean_Z + static_cast<size_t>(gid) * n_reg_Z;
+        for (int k = 0; k < n_reg_Z; ++k) {
+            Z[offset_z] -= row_z[k];
+            offset_z += leading_dim;
+        }
     }
 }
 
@@ -137,37 +169,76 @@ int launch_simple(size_t n, Kernel kernel, Args... args) {
 template <typename T>
 int fe_gpu_fe_accumulate_impl(const T* y,
                               const T* W,
+                              const T* Z,
                               const int* fe_ids,
                               size_t n_obs,
-                              int n_reg,
+                              int n_reg_W,
+                              int n_reg_Z,
                               size_t leading_dim,
                               T* group_sum_y,
                               T* group_sum_W,
+                              T* group_sum_Z,
                               int* group_counts) {
-    return launch_simple(n_obs, fe_accumulate_kernel<T>, y, W, fe_ids, n_obs, n_reg, leading_dim, group_sum_y, group_sum_W,
+    return launch_simple(n_obs,
+                         fe_accumulate_kernel<T>,
+                         y,
+                         W,
+                         Z,
+                         fe_ids,
+                         n_obs,
+                         n_reg_W,
+                         n_reg_Z,
+                         leading_dim,
+                         group_sum_y,
+                         group_sum_W,
+                         group_sum_Z,
                          group_counts);
 }
 
 template <typename T>
 int fe_gpu_fe_compute_means_impl(T* group_sum_y,
                                  T* group_sum_W,
+                                 T* group_sum_Z,
                                  const int* group_counts,
                                  int n_groups,
-                                 int n_reg) {
-    return launch_simple(static_cast<size_t>(n_groups), fe_compute_means_kernel<T>, group_sum_y, group_sum_W, group_counts,
-                         n_groups, n_reg);
+                                 int n_reg_W,
+                                 int n_reg_Z) {
+    return launch_simple(static_cast<size_t>(n_groups),
+                         fe_compute_means_kernel<T>,
+                         group_sum_y,
+                         group_sum_W,
+                         group_sum_Z,
+                         group_counts,
+                         n_groups,
+                         n_reg_W,
+                         n_reg_Z);
 }
 
 template <typename T>
 int fe_gpu_fe_subtract_impl(T* y,
                             T* W,
+                            T* Z,
                             const int* fe_ids,
                             size_t n_obs,
-                            int n_reg,
+                            int n_reg_W,
+                            int n_reg_Z,
                             size_t leading_dim,
                             const T* group_mean_y,
-                            const T* group_mean_W) {
-    return launch_simple(n_obs, fe_subtract_kernel<T>, y, W, fe_ids, n_obs, n_reg, leading_dim, group_mean_y, group_mean_W);
+                            const T* group_mean_W,
+                            const T* group_mean_Z) {
+    return launch_simple(n_obs,
+                         fe_subtract_kernel<T>,
+                         y,
+                         W,
+                         Z,
+                         fe_ids,
+                         n_obs,
+                         n_reg_W,
+                         n_reg_Z,
+                         leading_dim,
+                         group_mean_y,
+                         group_mean_W,
+                         group_mean_Z);
 }
 
 }  // namespace
@@ -295,42 +366,81 @@ int fe_gpu_runtime_get_last_error(char* buffer, size_t length) {
 
 int fe_gpu_fe_accumulate(const double* y,
                          const double* W,
+                         const double* Z,
                          const int* fe_ids,
                          size_t n_obs,
                          int n_reg,
+                         int n_inst,
                          size_t leading_dim,
                          double* group_sum_y,
                          double* group_sum_W,
+                         double* group_sum_Z,
                          int* group_counts) {
     if (n_obs == 0) {
         return store_success();
     }
-    return fe_gpu_fe_accumulate_impl(y, W, fe_ids, n_obs, n_reg, leading_dim, group_sum_y, group_sum_W, group_counts);
+    return fe_gpu_fe_accumulate_impl(
+        y, W, Z, fe_ids, n_obs, n_reg, n_inst, leading_dim, group_sum_y, group_sum_W, group_sum_Z, group_counts);
 }
 
 int fe_gpu_fe_compute_means(double* group_sum_y,
                             double* group_sum_W,
+                            double* group_sum_Z,
                             const int* group_counts,
                             int n_groups,
-                            int n_reg) {
+                            int n_reg,
+                            int n_inst) {
     if (n_groups == 0) {
         return store_success();
     }
-    return fe_gpu_fe_compute_means_impl(group_sum_y, group_sum_W, group_counts, n_groups, n_reg);
+    return fe_gpu_fe_compute_means_impl(group_sum_y, group_sum_W, group_sum_Z, group_counts, n_groups, n_reg, n_inst);
 }
 
 int fe_gpu_fe_subtract(double* y,
                        double* W,
+                       double* Z,
                        const int* fe_ids,
                        size_t n_obs,
                        int n_reg,
+                       int n_inst,
                        size_t leading_dim,
                        const double* group_mean_y,
-                       const double* group_mean_W) {
+                       const double* group_mean_W,
+                       const double* group_mean_Z) {
     if (n_obs == 0) {
         return store_success();
     }
-    return fe_gpu_fe_subtract_impl(y, W, fe_ids, n_obs, n_reg, leading_dim, group_mean_y, group_mean_W);
+    return fe_gpu_fe_subtract_impl(
+        y, W, Z, fe_ids, n_obs, n_reg, n_inst, leading_dim, group_mean_y, group_mean_W, group_mean_Z);
+}
+
+int fe_gpu_copy_columns(const double* src,
+                        int ld_src,
+                        const int* indices,
+                        int n_indices,
+                        int n_rows,
+                        double* dst,
+                        int ld_dst,
+                        int dest_offset) {
+    if (n_indices <= 0 || n_rows <= 0) {
+        return store_success();
+    }
+    if (!src || !dst || !indices) {
+        return store_custom_error("Invalid buffers for column copy");
+    }
+    for (int j = 0; j < n_indices; ++j) {
+        int src_col = indices[j] - 1;
+        if (src_col < 0) {
+            return store_custom_error("Column index out of range");
+        }
+        const double* src_ptr = src + static_cast<size_t>(src_col) * static_cast<size_t>(ld_src);
+        double* dst_ptr = dst + static_cast<size_t>(dest_offset + j) * static_cast<size_t>(ld_dst);
+        cudaError_t err = cudaMemcpy(dst_ptr, src_ptr, static_cast<size_t>(n_rows) * sizeof(double), cudaMemcpyDeviceToDevice);
+        if (err != cudaSuccess) {
+            return store_cuda_error(err, "cudaMemcpy column copy");
+        }
+    }
+    return store_success();
 }
 
 }  // extern "C"

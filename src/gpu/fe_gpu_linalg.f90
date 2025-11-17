@@ -1,5 +1,5 @@
 module fe_gpu_linalg
-    use iso_c_binding, only: c_int, c_ptr, c_double
+    use iso_c_binding, only: c_int, c_ptr, c_double, c_char
     use iso_fortran_env, only: int64, real64
     use fe_gpu_runtime, only: fe_device_buffer, fe_gpu_check
     implicit none
@@ -12,6 +12,8 @@ module fe_gpu_linalg
     public :: fe_gpu_dot
     public :: fe_gpu_cluster_scores
     public :: fe_gpu_cluster_meat
+    public :: fe_gpu_cross_product
+    public :: fe_gpu_matmul
 
     interface
         function c_fe_gpu_linalg_init() bind(C, name="fe_gpu_linalg_init") result(status)
@@ -75,6 +77,16 @@ module fe_gpu_linalg
             type(c_ptr), value :: scores, meat
             integer(c_int) :: status
         end function c_fe_gpu_cluster_meat
+
+        function c_fe_gpu_gemm(trans_a, trans_b, m, n, k, alpha, mat_a, ldA, mat_b, ldB, beta, mat_c, ldC) &
+                bind(C, name="fe_gpu_gemm") result(status)
+            import :: c_int, c_ptr, c_double, c_char
+            character(c_char), value :: trans_a, trans_b
+            integer(c_int), value :: m, n, k, ldA, ldB, ldC
+            real(c_double), value :: alpha, beta
+            type(c_ptr), value :: mat_a, mat_b, mat_c
+            integer(c_int) :: status
+        end function c_fe_gpu_gemm
     end interface
 
 contains
@@ -167,5 +179,48 @@ contains
         status = c_fe_gpu_cluster_meat(int(n_clusters, c_int), int(n_reg, c_int), scores%ptr, int(n_clusters, c_int), meat%ptr)
         call fe_gpu_check(status, 'forming clustered meat matrix')
     end subroutine fe_gpu_cluster_meat
+
+    subroutine fe_gpu_cross_product(left, right, output, n_rows, n_left, n_right)
+        type(fe_device_buffer), intent(in) :: left
+        type(fe_device_buffer), intent(in) :: right
+        type(fe_device_buffer), intent(in) :: output
+        integer(int64), intent(in) :: n_rows
+        integer, intent(in) :: n_left, n_right
+        integer(c_int) :: status
+        real(c_double) :: one, zero
+        character(c_char) :: trans_t, trans_n
+
+        if (n_left == 0 .or. n_right == 0 .or. n_rows <= 0_int64) return
+
+        one = real(1.0_real64, kind=c_double)
+        zero = real(0.0_real64, kind=c_double)
+        trans_t = 'T'
+        trans_n = 'N'
+
+        status = c_fe_gpu_gemm(trans_t, trans_n, int(n_left, c_int), int(n_right, c_int), int(n_rows, c_int), one, &
+            left%ptr, int(n_rows, c_int), right%ptr, int(n_rows, c_int), zero, output%ptr, int(n_left, c_int))
+        call fe_gpu_check(status, 'computing cross-product A^T B')
+    end subroutine fe_gpu_cross_product
+
+    subroutine fe_gpu_matmul(left, right, result, n_rows, n_inner, n_cols)
+        type(fe_device_buffer), intent(in) :: left
+        type(fe_device_buffer), intent(in) :: right
+        type(fe_device_buffer), intent(in) :: result
+        integer(int64), intent(in) :: n_rows
+        integer, intent(in) :: n_inner, n_cols
+        integer(c_int) :: status
+        real(c_double) :: one, zero
+        character(c_char) :: trans_n
+
+        if (n_rows <= 0_int64 .or. n_inner <= 0 .or. n_cols <= 0) return
+
+        one = real(1.0_real64, kind=c_double)
+        zero = real(0.0_real64, kind=c_double)
+        trans_n = 'N'
+
+        status = c_fe_gpu_gemm(trans_n, trans_n, int(n_rows, c_int), int(n_cols, c_int), int(n_inner, c_int), one, &
+            left%ptr, int(n_rows, c_int), right%ptr, int(n_inner, c_int), zero, result%ptr, int(n_rows, c_int))
+        call fe_gpu_check(status, 'computing matrix product A * B')
+    end subroutine fe_gpu_matmul
 
 end module fe_gpu_linalg

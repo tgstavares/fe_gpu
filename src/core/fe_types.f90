@@ -9,6 +9,7 @@ module fe_types
     type, public :: fe_dataset_header
         integer(int64) :: n_obs         = 0_int64
         integer(int32) :: n_regressors  = 0_int32
+        integer(int32) :: n_instruments = 0_int32
         integer(int32) :: n_fe          = 0_int32
         logical        :: has_cluster   = .false.
         logical        :: has_weights   = .false.
@@ -21,6 +22,7 @@ module fe_types
     type, public :: fe_host_arrays
         real(real64), allocatable :: y(:)
         real(real64), allocatable :: W(:, :)
+        real(real64), allocatable :: Z(:, :)
         integer(int32), allocatable :: fe_ids(:, :)
         integer(int32), allocatable :: cluster(:)
         real(real64), allocatable :: weights(:)
@@ -57,8 +59,8 @@ contains
         character(len=:), allocatable :: message
         character(len=256) :: buffer
 
-        write(buffer, '("N=",I0,", K=",I0,", FE dims=",I0,", clusters=",L1,", weights=",L1,", precision_flag=",I0)') &
-            this%n_obs, this%n_regressors, this%n_fe, this%has_cluster, this%has_weights, this%precision_flag
+        write(buffer, '("N=",I0,", K=",I0,", L=",I0,", FE dims=",I0,", clusters=",L1,", weights=",L1,", precision_flag=",I0)') &
+            this%n_obs, this%n_regressors, this%n_instruments, this%n_fe, this%has_cluster, this%has_weights, this%precision_flag
         message = trim(buffer)
     end function fe_header_summary
 

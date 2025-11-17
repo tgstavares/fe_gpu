@@ -1,6 +1,6 @@
 module fe_gpu_runtime
     use iso_c_binding, only: c_ptr, c_null_ptr, c_int, c_size_t, c_char, c_null_char, c_associated
-    use iso_fortran_env, only: int64
+    use iso_fortran_env, only: int64, int32
     use fe_logging, only: log_info, log_error
     implicit none
     private
@@ -48,6 +48,7 @@ module fe_gpu_runtime
     public :: fe_device_memset
     public :: fe_gpu_backend_available
     public :: fe_gpu_check
+    public :: fe_gpu_copy_columns
 
     interface
         function c_fe_gpu_runtime_is_available() bind(C, name="fe_gpu_runtime_is_available") result(flag)
@@ -118,6 +119,15 @@ module fe_gpu_runtime
             integer(c_size_t), value :: length
             integer(c_int) :: status
         end function c_fe_gpu_runtime_get_last_error
+
+        function c_fe_gpu_copy_columns(src, ld_src, indices, n_indices, n_rows, dst, ld_dst, dest_offset) &
+                bind(C, name="fe_gpu_copy_columns") result(status)
+            import :: c_ptr, c_int
+            type(c_ptr), value :: src, dst
+            integer(c_int), value :: ld_src, n_indices, n_rows, ld_dst, dest_offset
+            integer(c_int), intent(in) :: indices(*)
+            integer(c_int) :: status
+        end function c_fe_gpu_copy_columns
     end interface
 
 contains
@@ -198,6 +208,21 @@ contains
         buffer%ptr = c_null_ptr
         buffer%size_bytes = 0_int64
     end subroutine fe_device_free
+
+    subroutine fe_gpu_copy_columns(src, n_rows, indices, dest, dest_offset)
+        type(fe_device_buffer), intent(in) :: src
+        integer(int64), intent(in) :: n_rows
+        integer(int32), intent(in) :: indices(:)
+        type(fe_device_buffer), intent(in) :: dest
+        integer, intent(in) :: dest_offset
+        integer(c_int) :: status
+
+        if (.not. c_associated(src%ptr) .or. .not. c_associated(dest%ptr)) return
+        if (size(indices) == 0) return
+        status = c_fe_gpu_copy_columns(src%ptr, int(n_rows, c_int), indices, int(size(indices), c_int), &
+            int(n_rows, c_int), dest%ptr, int(n_rows, c_int), int(dest_offset, c_int))
+        call fe_gpu_check(status, 'copying GPU columns')
+    end subroutine fe_gpu_copy_columns
 
     subroutine fe_memcpy_htod(dest, src_ptr, nbytes)
         type(fe_device_buffer), intent(in) :: dest

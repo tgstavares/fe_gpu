@@ -10,29 +10,30 @@ module fe_gpu_demean
     public :: fe_gpu_within_transform
 
     interface
-        function c_fe_gpu_fe_accumulate(y, W, fe_ids, n_obs, n_reg, leading_dim, group_sum_y, group_sum_W, group_counts) &
-            bind(C, name="fe_gpu_fe_accumulate") result(status)
+        function c_fe_gpu_fe_accumulate(y, W, Z, fe_ids, n_obs, n_reg, n_inst, leading_dim, group_sum_y, group_sum_W, &
+                group_sum_Z, group_counts) bind(C, name="fe_gpu_fe_accumulate") result(status)
             import :: c_ptr, c_size_t, c_int
-            type(c_ptr), value :: y, W, fe_ids, group_sum_y, group_sum_W, group_counts
+            type(c_ptr), value :: y, W, Z, fe_ids, group_sum_y, group_sum_W, group_sum_Z, group_counts
             integer(c_size_t), value :: n_obs, leading_dim
-            integer(c_int), value :: n_reg
+            integer(c_int), value :: n_reg, n_inst
             integer(c_int) :: status
         end function c_fe_gpu_fe_accumulate
 
-        function c_fe_gpu_fe_compute_means(group_sum_y, group_sum_W, group_counts, n_groups, n_reg) &
+        function c_fe_gpu_fe_compute_means(group_sum_y, group_sum_W, group_sum_Z, group_counts, n_groups, n_reg, n_inst) &
             bind(C, name="fe_gpu_fe_compute_means") result(status)
             import :: c_ptr, c_int
-            type(c_ptr), value :: group_sum_y, group_sum_W, group_counts
-            integer(c_int), value :: n_groups, n_reg
+            type(c_ptr), value :: group_sum_y, group_sum_W, group_sum_Z, group_counts
+            integer(c_int), value :: n_groups, n_reg, n_inst
             integer(c_int) :: status
         end function c_fe_gpu_fe_compute_means
 
-        function c_fe_gpu_fe_subtract(y, W, fe_ids, n_obs, n_reg, leading_dim, group_mean_y, group_mean_W) &
+        function c_fe_gpu_fe_subtract(y, W, Z, fe_ids, n_obs, n_reg, n_inst, leading_dim, group_mean_y, group_mean_W, &
+                group_mean_Z) &
             bind(C, name="fe_gpu_fe_subtract") result(status)
             import :: c_ptr, c_size_t, c_int
-            type(c_ptr), value :: y, W, fe_ids, group_mean_y, group_mean_W
+            type(c_ptr), value :: y, W, Z, fe_ids, group_mean_y, group_mean_W, group_mean_Z
             integer(c_size_t), value :: n_obs, leading_dim
-            integer(c_int), value :: n_reg
+            integer(c_int), value :: n_reg, n_inst
             integer(c_int) :: status
         end function c_fe_gpu_fe_subtract
     end interface
@@ -51,6 +52,7 @@ contains
         real(real64) :: change
         integer(c_int) :: status
         integer :: n_reg
+        integer :: n_inst
         integer(int64) :: ldW
         integer(c_size_t) :: n_obs_c
         integer(c_size_t) :: ldw_c
@@ -59,6 +61,7 @@ contains
         converged = .true.
         iterations = 0
         n_reg = dataset%n_regressors
+        n_inst = dataset%n_instruments
         ldW = dataset%n_obs
         hit_tolerance = .false.
 
@@ -73,22 +76,28 @@ contains
             do d = 1, dataset%n_fe
                 call fe_device_memset(dataset%fe_dims(d)%group_mean_y, 0)
                 call fe_device_memset(dataset%fe_dims(d)%group_mean_W, 0)
+                if (n_inst > 0) then
+                    call fe_device_memset(dataset%fe_dims(d)%group_mean_Z, 0)
+                end if
                 call fe_device_memset(dataset%fe_dims(d)%group_counts, 0)
 
                 status = c_fe_gpu_fe_accumulate( &
-                    dataset%d_y%ptr, dataset%d_W%ptr, dataset%fe_dims(d)%fe_ids%ptr, n_obs_c, int(n_reg, kind=c_int), ldw_c, &
-                    dataset%fe_dims(d)%group_mean_y%ptr, dataset%fe_dims(d)%group_mean_W%ptr, &
+                    dataset%d_y%ptr, dataset%d_W%ptr, dataset%d_Z%ptr, dataset%fe_dims(d)%fe_ids%ptr, n_obs_c, &
+                    int(n_reg, kind=c_int), int(n_inst, kind=c_int), ldw_c, dataset%fe_dims(d)%group_mean_y%ptr, &
+                    dataset%fe_dims(d)%group_mean_W%ptr, dataset%fe_dims(d)%group_mean_Z%ptr, &
                     dataset%fe_dims(d)%group_counts%ptr)
                 call fe_gpu_check(status, 'accumulating FE statistics')
 
                 status = c_fe_gpu_fe_compute_means( &
                     dataset%fe_dims(d)%group_mean_y%ptr, dataset%fe_dims(d)%group_mean_W%ptr, &
-                    dataset%fe_dims(d)%group_counts%ptr, int(dataset%fe_dims(d)%n_groups, kind=c_int), int(n_reg, kind=c_int))
+                    dataset%fe_dims(d)%group_mean_Z%ptr, dataset%fe_dims(d)%group_counts%ptr, &
+                    int(dataset%fe_dims(d)%n_groups, kind=c_int), int(n_reg, kind=c_int), int(n_inst, kind=c_int))
                 call fe_gpu_check(status, 'computing FE group means')
 
                 status = c_fe_gpu_fe_subtract( &
-                    dataset%d_y%ptr, dataset%d_W%ptr, dataset%fe_dims(d)%fe_ids%ptr, n_obs_c, int(n_reg, kind=c_int), ldw_c, &
-                    dataset%fe_dims(d)%group_mean_y%ptr, dataset%fe_dims(d)%group_mean_W%ptr)
+                    dataset%d_y%ptr, dataset%d_W%ptr, dataset%d_Z%ptr, dataset%fe_dims(d)%fe_ids%ptr, n_obs_c, &
+                    int(n_reg, kind=c_int), int(n_inst, kind=c_int), ldw_c, dataset%fe_dims(d)%group_mean_y%ptr, &
+                    dataset%fe_dims(d)%group_mean_W%ptr, dataset%fe_dims(d)%group_mean_Z%ptr)
                 call fe_gpu_check(status, 'subtracting FE means')
 
                 change = abs_copy_to_host(dataset%fe_dims(d)%group_mean_y, int(dataset%fe_dims(d)%n_groups, int64))
@@ -97,6 +106,11 @@ contains
                 if (n_reg > 0) then
                     change = abs_copy_to_host(dataset%fe_dims(d)%group_mean_W, &
                         int(dataset%fe_dims(d)%n_groups, int64) * int(n_reg, int64))
+                    max_update = max(max_update, change)
+                end if
+                if (n_inst > 0) then
+                    change = abs_copy_to_host(dataset%fe_dims(d)%group_mean_Z, &
+                        int(dataset%fe_dims(d)%n_groups, int64) * int(n_inst, int64))
                     max_update = max(max_update, change)
                 end if
             end do

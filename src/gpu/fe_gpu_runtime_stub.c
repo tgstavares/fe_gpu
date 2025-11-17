@@ -127,54 +127,89 @@ int fe_gpu_cluster_meat(int n_clusters,
 
 int fe_gpu_fe_accumulate(const double* y,
                          const double* W,
+                         const double* Z,
                          const int* fe_ids,
                          size_t n_obs,
                          int n_reg,
+                         int n_inst,
                          size_t leading_dim,
                          double* group_sum_y,
                          double* group_sum_W,
+                         double* group_sum_Z,
                          int* group_counts) {
     (void)y;
     (void)W;
+    (void)Z;
     (void)fe_ids;
     (void)n_obs;
     (void)n_reg;
+    (void)n_inst;
     (void)leading_dim;
     (void)group_sum_y;
     (void)group_sum_W;
+    (void)group_sum_Z;
     (void)group_counts;
     return set_stub_error();
 }
 
 int fe_gpu_fe_compute_means(double* group_sum_y,
                             double* group_sum_W,
+                            double* group_sum_Z,
                             const int* group_counts,
                             int n_groups,
-                            int n_reg) {
+                            int n_reg,
+                            int n_inst) {
     (void)group_sum_y;
     (void)group_sum_W;
+    (void)group_sum_Z;
     (void)group_counts;
     (void)n_groups;
     (void)n_reg;
+    (void)n_inst;
     return set_stub_error();
 }
 
 int fe_gpu_fe_subtract(double* y,
                        double* W,
+                       double* Z,
                        const int* fe_ids,
                        size_t n_obs,
                        int n_reg,
+                        int n_inst,
                        size_t leading_dim,
                        const double* group_mean_y,
-                       const double* group_mean_W) {
+                       const double* group_mean_W,
+                       const double* group_mean_Z) {
     (void)y;
     (void)W;
+    (void)Z;
     (void)fe_ids;
     (void)n_obs;
     (void)n_reg;
+    (void)n_inst;
     (void)leading_dim;
     (void)group_mean_y;
     (void)group_mean_W;
+    (void)group_mean_Z;
+    return set_stub_error();
+}
+
+int fe_gpu_copy_columns(const double* src,
+                        int ld_src,
+                        const int* indices,
+                        int n_indices,
+                        int n_rows,
+                        double* dst,
+                        int ld_dst,
+                        int dest_offset) {
+    (void)src;
+    (void)ld_src;
+    (void)indices;
+    (void)n_indices;
+    (void)n_rows;
+    (void)dst;
+    (void)ld_dst;
+    (void)dest_offset;
     return set_stub_error();
 }
 
@@ -206,5 +241,34 @@ int fe_gpu_gemv(int n_rows, int n_cols, double alpha, const double* W, int ldW, 
     (void)y;
     (void)beta;
     (void)b;
+    return set_stub_error();
+}
+
+int fe_gpu_gemm(char transA,
+                char transB,
+                int m,
+                int n,
+                int k,
+                double alpha,
+                const double* A,
+                int ldA,
+                const double* B,
+                int ldB,
+                double beta,
+                double* C,
+                int ldC) {
+    (void)transA;
+    (void)transB;
+    (void)m;
+    (void)n;
+    (void)k;
+    (void)alpha;
+    (void)A;
+    (void)ldA;
+    (void)B;
+    (void)ldB;
+    (void)beta;
+    (void)C;
+    (void)ldC;
     return set_stub_error();
 }

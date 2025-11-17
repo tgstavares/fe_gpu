@@ -4,11 +4,11 @@
 import argparse
 import pathlib
 import struct
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 
-HEADER_FORMAT = '<qiiii'
+HEADER_FORMAT = '<qiiiii'
 PRECISION_FLAGS = {
     'float64': 0,
     'float32': 1,
@@ -35,6 +35,12 @@ def parse_args() -> argparse.Namespace:
                         help='Std. dev. for additional regressors (default: 0.3)')
     parser.add_argument('--noise-std', type=float, default=0.5, help='Std. dev. of epsilon (default: 0.5)')
     parser.add_argument('--sick-std', type=float, default=0.5, help='Std. dev. of sick-shock regressor (default: 0.5)')
+    parser.add_argument('--iv-vars', type=int, default=0,
+                        help='Number of synthetic instrumental variables to generate (default: 0)')
+    parser.add_argument('--iv-noise-std', type=float, default=0.25,
+                        help='Std. dev. of noise added to each instrument (default: 0.25)')
+    parser.add_argument('--endog-cols', type=int, nargs='*', default=None,
+                        help='1-based indices of regressors treated as endogenous (default: none)')
     parser.add_argument('--precision', choices=PRECISION_FLAGS.keys(), default='float64',
                         help='Floating-point precision for storage (default: float64)')
     parser.add_argument('--seed', type=int, default=1234, help='Random seed (default: 1234)')
@@ -104,6 +110,23 @@ def build_panel(args: argparse.Namespace):
     else:
         W = np.column_stack((tenure, sick_shock)).astype(np.float64)
 
+    iv_count = max(0, args.iv_vars)
+    if iv_count > 0:
+        instruments = np.empty((iv_count, n_obs), dtype=np.float64)
+        base_cols = W.shape[1]
+        if args.endog_cols:
+            valid_cols = [max(1, min(base_cols, idx)) - 1 for idx in args.endog_cols]
+            if len(valid_cols) == 0:
+                valid_cols = list(range(base_cols))
+        else:
+            valid_cols = list(range(base_cols))
+        for j in range(iv_count):
+            source_col = valid_cols[j % len(valid_cols)]
+            instruments[j, :] = W[:, source_col] + rng.normal(0.0, args.iv_noise_std, size=n_obs)
+            instruments[j, :] += rng.normal(0.0, 0.1, size=n_obs)
+    else:
+        instruments = np.zeros((0, n_obs), dtype=np.float64)
+
     fe_ids = np.vstack((worker_obs, firm_obs, time_obs)).astype(np.int32)
 
     parquet_columns: Dict[str, np.ndarray] = {
@@ -117,29 +140,40 @@ def build_panel(args: argparse.Namespace):
     if extras.shape[0] > 0:
         for j in range(extras.shape[0]):
             parquet_columns[f'extra_{j + 1}'] = extras[j].astype(np.float64, copy=False)
+    if instruments.shape[0] > 0:
+        for j in range(instruments.shape[0]):
+            parquet_columns[f'iv_{j + 1}'] = instruments[j].astype(np.float64, copy=False)
 
-    return wages, W, fe_ids, parquet_columns
+    return wages, W, instruments, fe_ids, parquet_columns
 
 
 def write_binary(path: pathlib.Path, wages: np.ndarray, W: np.ndarray, fe_ids: np.ndarray,
-                 precision_flag: int):
+                 precision_flag: int, instruments: Optional[np.ndarray] = None):
     n_obs = wages.shape[0]
     n_reg = W.shape[1]
+    n_instr = 0 if instruments is None else instruments.shape[0]
     n_fe = fe_ids.shape[0]
 
     dtype = np.float32 if precision_flag == PRECISION_FLAGS['float32'] else np.float64
     wages_out = wages.astype(dtype)
     W_out = W.astype(dtype, order='F')
+    if instruments is not None and n_instr > 0:
+        Z_out = instruments.astype(dtype, order='F')
+    else:
+        Z_out = None
 
     with path.open('wb') as f:
         f.write(struct.pack('<q', n_obs))
         f.write(struct.pack('<i', n_reg))
+        f.write(struct.pack('<i', n_instr))
         f.write(struct.pack('<i', n_fe))
         f.write(struct.pack('<i', 0))  # has_cluster
         f.write(struct.pack('<i', 0))  # has_weights
         f.write(struct.pack('<i', precision_flag))
         f.write(wages_out.tobytes(order='C'))
         f.write(W_out.tobytes(order='F'))
+        if Z_out is not None:
+            f.write(Z_out.tobytes(order='F'))
         for d in range(n_fe):
             f.write(fe_ids[d].astype('<i4', copy=False).tobytes(order='C'))
 
@@ -158,13 +192,18 @@ def write_parquet(path: pathlib.Path, columns: Dict[str, np.ndarray]):
 
 def main():
     args = parse_args()
-    wages, W, fe_ids, parquet_columns = build_panel(args)
-    write_binary(args.output, wages, W, fe_ids, PRECISION_FLAGS[args.precision])
+    wages, W, Z, fe_ids, parquet_columns = build_panel(args)
+    write_binary(args.output, wages, W, fe_ids, PRECISION_FLAGS[args.precision], instruments=Z if Z.size > 0 else None)
     bytes_len = args.output.stat().st_size
-    print(f"Wrote {args.output} with {W.shape[0]} observations, {W.shape[1]} regressors, {fe_ids.shape[0]} FE dims ({bytes_len} bytes)")
+    print(f"Wrote {args.output} with {W.shape[0]} observations, {W.shape[1]} regressors, "
+          f"{Z.shape[0]} instruments, {fe_ids.shape[0]} FE dims ({bytes_len} bytes)")
     if args.extra_vars > 0:
         coeffs = args.extra_coeffs_actual
         print(f"Extra coefficients used: {coeffs.tolist()}")
+    if args.endog_cols:
+        endog_str = ','.join(str(idx) for idx in args.endog_cols)
+        print(f"Endogenous regressors (1-based indices): {endog_str}")
+        print(f"Suggested fe_gpu flag: --iv-cols {endog_str}")
     if args.parquet_output is not None:
         write_parquet(args.parquet_output, parquet_columns)
         print(f"Wrote {args.parquet_output} (Parquet) mirroring the binary dataset")

@@ -6,8 +6,9 @@ module fe_pipeline
     use fe_gpu_data, only: fe_gpu_dataset, fe_gpu_dataset_upload, fe_gpu_dataset_destroy
     use fe_gpu_demean, only: fe_gpu_within_transform
     use fe_gpu_linalg, only: fe_gpu_linalg_initialize, fe_gpu_linalg_finalize, fe_gpu_compute_cross_products, &
-        fe_gpu_compute_residual, fe_gpu_dot, fe_gpu_cluster_scores, fe_gpu_cluster_meat
-    use fe_gpu_runtime, only: fe_device_buffer, fe_device_alloc, fe_device_free, fe_memcpy_dtoh, fe_memcpy_htod, fe_device_memset
+        fe_gpu_compute_residual, fe_gpu_dot, fe_gpu_cluster_scores, fe_gpu_cluster_meat, fe_gpu_cross_product, fe_gpu_matmul
+    use fe_gpu_runtime, only: fe_device_buffer, fe_device_alloc, fe_device_free, fe_memcpy_dtoh, fe_memcpy_htod, &
+        fe_device_memset, fe_gpu_copy_columns
     use fe_solver, only: chol_solve_and_invert
     use fe_logging, only: log_warn, log_info
     use fe_cluster_utils, only: build_cluster_ids
@@ -37,6 +38,8 @@ module fe_pipeline
         integer :: dof_model = 0
         integer :: dof_fes = 0
         integer(int64) :: dof_resid = 0_int64
+        logical :: is_iv = .false.
+        integer :: n_instruments = 0
         real(real64), allocatable :: beta(:)
         real(real64), allocatable :: se(:)
     end type fe_estimation_result
@@ -56,12 +59,20 @@ contains
         type(fe_device_buffer) :: d_Q, d_b
         logical :: converged
         integer :: iterations
-        integer :: k, info
+        integer :: k, info, i
         integer(int64) :: bytes
         real(real64), allocatable, target :: host_Q(:, :), host_b(:)
+        real(real64), allocatable, target :: host_WW(:, :), host_Wy(:)
         integer, allocatable :: keep_idx(:)
         real(real64), allocatable :: Q_inv_kept(:, :)
         integer :: it0, it1, itrate
+        logical, allocatable :: is_endog(:)
+        integer, allocatable :: idx_endog(:), idx_exog(:)
+        integer :: n_endog, n_exog, n_total_instr
+        type(fe_device_buffer) :: d_Z_aug
+        character(len=256) :: warn_buf
+        integer(int32), allocatable :: col_indices(:)
+        logical :: use_iv
 
         call system_clock(count_rate = itrate)
         call system_clock(count=it0)
@@ -83,6 +94,8 @@ contains
         result%dof_model = 0
         result%dof_fes = 0
         result%dof_resid = 0_int64
+        result%is_iv = .false.
+        result%n_instruments = 0
         if (allocated(result%beta)) deallocate(result%beta)
         if (allocated(result%se)) deallocate(result%se)
         if (allocated(result%cluster_fe_dims)) deallocate(result%cluster_fe_dims)
@@ -99,11 +112,15 @@ contains
         d_Q%size_bytes = 0_int64
         d_b%ptr = c_null_ptr
         d_b%size_bytes = 0_int64
+        d_Z_aug%ptr = c_null_ptr
+        d_Z_aug%size_bytes = 0_int64
 
         result%tss_total = compute_tss(host%y, .true.)
         result%dof_fes = estimate_fe_dof(group_sizes)
 
         call fe_gpu_dataset_upload(host, group_sizes, gpu_data)
+        result%is_iv = .false.
+        result%n_instruments = header%n_instruments
         call fe_gpu_linalg_initialize()
 
         
@@ -134,14 +151,73 @@ contains
 
         call fe_gpu_dot(gpu_data%d_y, gpu_data%d_y, gpu_data%n_obs, result%tss_within)
 
-        call fe_gpu_compute_cross_products(gpu_data%d_y, gpu_data%d_W, d_Q, d_b, gpu_data%n_obs, k)
+        if (k > 0) then
+            allocate(host_WW(k, k))
+            allocate(host_Wy(k))
+            call fe_gpu_compute_cross_products(gpu_data%d_y, gpu_data%d_W, d_Q, d_b, gpu_data%n_obs, k)
+            call fe_memcpy_dtoh(c_loc(host_WW(1, 1)), d_Q)
+            call fe_memcpy_dtoh(c_loc(host_Wy(1)), d_b)
+            call symmetrize_upper(host_WW)
+        else
+            allocate(host_WW(0, 0))
+            allocate(host_Wy(0))
+        end if
 
         allocate(host_Q(k, k))
         allocate(host_b(k))
 
-        call fe_memcpy_dtoh(c_loc(host_Q(1, 1)), d_Q)
-        call fe_memcpy_dtoh(c_loc(host_b(1)), d_b)
-        call symmetrize_upper(host_Q)
+        if (k > 0) then
+            allocate(is_endog(k))
+            is_endog = .false.
+            if (allocated(cfg%iv_regressors)) then
+                do i = 1, size(cfg%iv_regressors)
+                    if (cfg%iv_regressors(i) < 1 .or. cfg%iv_regressors(i) > k) then
+                        write(warn_buf, '("Ignoring IV regressor index ",I0," (out of range).")') cfg%iv_regressors(i)
+                        call log_warn(trim(warn_buf))
+                    else
+                        is_endog(cfg%iv_regressors(i)) = .true.
+                    end if
+                end do
+            end if
+            n_endog = count(is_endog)
+            n_exog = k - n_endog
+            allocate(idx_endog(n_endog))
+            allocate(idx_exog(n_exog))
+            if (n_endog > 0) idx_endog = pack([(i, i = 1, k)], is_endog)
+            if (n_exog > 0) idx_exog = pack([(i, i = 1, k)], .not. is_endog)
+        else
+            allocate(is_endog(0))
+            allocate(idx_endog(0))
+            allocate(idx_exog(0))
+            n_endog = 0
+            n_exog = 0
+        end if
+
+        n_total_instr = n_exog + header%n_instruments
+        use_iv = (n_endog > 0)
+        if (use_iv .and. n_total_instr < n_endog) then
+            write(warn_buf, '("Insufficient instruments (",I0," available for ",I0," endogenous regressors); reverting to OLS.")') &
+                n_total_instr, n_endog
+            call log_warn(trim(warn_buf))
+            use_iv = .false.
+        end if
+        result%is_iv = use_iv
+        if (use_iv) then
+            result%n_instruments = n_total_instr
+        else
+            result%n_instruments = 0
+        end if
+
+        if (use_iv) then
+            call build_iv_normal_equations(host_Q, host_b, info)
+            if (info /= 0) then
+                result%solver_info = info
+                call cleanup()
+                return
+            end if
+        else
+            call build_ols_normal_equations(host_Q, host_b)
+        end if
 
         call solve_with_column_filter(host_Q, host_b, result, keep_idx, Q_inv_kept, info)
         result%solver_info = info
@@ -168,6 +244,101 @@ contains
         result%time_se = real(it1 - it0) / real(itrate)
 
     contains
+
+        subroutine build_ols_normal_equations(Q_out, b_out)
+            real(real64), intent(out), target :: Q_out(:, :)
+            real(real64), intent(out), target :: b_out(:)
+            if (k <= 0) return
+            Q_out = host_WW
+            b_out = host_Wy
+        end subroutine build_ols_normal_equations
+
+        subroutine build_iv_normal_equations(Q_out, b_out, info_out)
+            real(real64), intent(out) :: Q_out(:, :)
+            real(real64), intent(out) :: b_out(:)
+            integer, intent(out) :: info_out
+            type(fe_device_buffer) :: d_Q_iv, d_b_iv, d_cross, d_temp
+            real(real64), allocatable, target :: Qzz(:, :), Qinv(:, :), Qzx(:, :)
+            real(real64), allocatable, target :: Qzy(:), iv_rhs(:), proj_matrix(:, :)
+            integer(int64) :: bytes
+            integer(int32), allocatable :: col_idx(:)
+            integer :: n_instr_aug
+
+            info_out = 0
+            n_instr_aug = n_total_instr
+            if (n_instr_aug <= 0) then
+                info_out = -1
+                return
+            end if
+
+            bytes = gpu_data%n_obs * int(n_instr_aug, int64) * REAL64_BYTES
+            call fe_device_alloc(d_Z_aug, bytes)
+            if (n_exog > 0) then
+                allocate(col_idx(n_exog))
+                col_idx = int(idx_exog, int32)
+                call fe_gpu_copy_columns(gpu_data%d_W, gpu_data%n_obs, col_idx, d_Z_aug, 0)
+                deallocate(col_idx)
+            end if
+            if (header%n_instruments > 0) then
+                allocate(col_idx(header%n_instruments))
+                col_idx = [(int(i, int32), i = 1, header%n_instruments)]
+                call fe_gpu_copy_columns(gpu_data%d_Z, gpu_data%n_obs, col_idx, d_Z_aug, n_exog)
+                deallocate(col_idx)
+            end if
+
+            bytes = int(n_instr_aug, int64) * int(n_instr_aug, int64) * REAL64_BYTES
+            call fe_device_alloc(d_Q_iv, bytes)
+
+            bytes = int(n_instr_aug, int64) * REAL64_BYTES
+            call fe_device_alloc(d_b_iv, bytes)
+
+            bytes = int(n_instr_aug, int64) * int(k, int64) * REAL64_BYTES
+            call fe_device_alloc(d_cross, bytes)
+
+            call fe_gpu_compute_cross_products(gpu_data%d_y, d_Z_aug, d_Q_iv, d_b_iv, gpu_data%n_obs, n_instr_aug)
+            call fe_gpu_cross_product(d_Z_aug, gpu_data%d_W, d_cross, gpu_data%n_obs, n_instr_aug, k)
+
+            allocate(Qzz(n_instr_aug, n_instr_aug))
+            allocate(Qzy(n_instr_aug))
+            allocate(Qzx(n_instr_aug, k))
+            allocate(Qinv(n_instr_aug, n_instr_aug))
+            allocate(iv_rhs(n_instr_aug))
+            allocate(proj_matrix(n_instr_aug, k))
+
+            call fe_memcpy_dtoh(c_loc(Qzz(1, 1)), d_Q_iv)
+            call fe_memcpy_dtoh(c_loc(Qzy(1)), d_b_iv)
+            call fe_memcpy_dtoh(c_loc(Qzx(1, 1)), d_cross)
+            call symmetrize_upper(Qzz)
+
+            call chol_solve_and_invert(Qzz, Qzy, iv_rhs, Qinv, info_out)
+            if (info_out /= 0) goto 100
+
+            proj_matrix = matmul(Qinv, Qzx)
+            Q_out = matmul(transpose(Qzx), proj_matrix)
+            Q_out = 0.5_real64 * (Q_out + transpose(Q_out))
+            b_out = matmul(transpose(Qzx), iv_rhs)
+
+            bytes = int(n_instr_aug, int64) * int(k, int64) * REAL64_BYTES
+            call fe_device_alloc(d_temp, bytes)
+            call fe_memcpy_htod(d_temp, c_loc(proj_matrix(1, 1)), bytes)
+
+            bytes = gpu_data%n_obs * int(k, int64) * REAL64_BYTES
+            call fe_device_alloc(gpu_data%d_proj_W, bytes)
+            call fe_gpu_matmul(d_Z_aug, d_temp, gpu_data%d_proj_W, gpu_data%n_obs, n_instr_aug, k)
+
+100         continue
+            call fe_device_free(d_Q_iv)
+            call fe_device_free(d_b_iv)
+            call fe_device_free(d_cross)
+            call fe_device_free(d_temp)
+            if (c_associated(d_Z_aug%ptr)) call fe_device_free(d_Z_aug)
+            if (allocated(Qzz)) deallocate(Qzz)
+            if (allocated(Qzy)) deallocate(Qzy)
+            if (allocated(Qzx)) deallocate(Qzx)
+            if (allocated(Qinv)) deallocate(Qinv)
+            if (allocated(iv_rhs)) deallocate(iv_rhs)
+            if (allocated(proj_matrix)) deallocate(proj_matrix)
+        end subroutine build_iv_normal_equations
 
         subroutine solve_with_column_filter(Q_full, b_full, est, idx_out, Q_inv, info_out)
             real(real64), intent(inout) :: Q_full(:, :)
@@ -256,6 +427,8 @@ contains
             type(fe_device_buffer) :: ids_buffer
             real(real64) :: subset_start, subset_mid, subset_end
             character(len=64) :: subset_label
+            type(fe_device_buffer) :: reg_matrix
+            logical :: use_projected
 
             kept = size(idx)
             if (allocated(result%se)) result%se = 0.0_real64
@@ -286,6 +459,12 @@ contains
             diag_vals = diag_vector(Q_inv_kept)
 
             has_clusters = allocated(result%cluster_fe_dims) .and. size(result%cluster_fe_dims) > 0
+            use_projected = result%is_iv .and. c_associated(gpu_data%d_proj_W%ptr)
+            if (use_projected) then
+                reg_matrix = gpu_data%d_proj_W
+            else
+                reg_matrix = gpu_data%d_W
+            end if
             cluster_success = .true.
             if (.not. has_clusters) then
                 do i = 1, kept
@@ -358,7 +537,7 @@ contains
                     bytes_clusters = int(n_clusters, int64) * int(size(result%beta), int64) * REAL64_BYTES
                     call fe_device_alloc(d_scores, bytes_clusters)
                     call fe_device_memset(d_scores, 0)
-                    call fe_gpu_cluster_scores(d_residual, gpu_data%d_W, ids_buffer, gpu_data%n_obs, size(result%beta), &
+                    call fe_gpu_cluster_scores(d_residual, reg_matrix, ids_buffer, gpu_data%n_obs, size(result%beta), &
                         n_clusters, d_scores)
 
                     bytes_reg = int(size(result%beta), int64) * int(size(result%beta), int64) * REAL64_BYTES
@@ -483,6 +662,7 @@ contains
         subroutine cleanup()
             if (c_associated(d_Q%ptr)) call fe_device_free(d_Q)
             if (c_associated(d_b%ptr)) call fe_device_free(d_b)
+            if (c_associated(d_Z_aug%ptr)) call fe_device_free(d_Z_aug)
             call fe_gpu_dataset_destroy(gpu_data)
             call fe_gpu_linalg_finalize()
             if (allocated(host_Q)) deallocate(host_Q)

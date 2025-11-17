@@ -205,4 +205,29 @@ int fe_gpu_cluster_meat(int n_clusters,
     return fe_gpu_syrk(n_clusters, n_cols, 1.0, scores, ldScores, 0.0, meat);
 }
 
+int fe_gpu_gemm(char transA,
+                char transB,
+                int m,
+                int n,
+                int k,
+                double alpha,
+                const double* A,
+                int ldA,
+                const double* B,
+                int ldB,
+                double beta,
+                double* C,
+                int ldC) {
+    if (ensure_handle() != 0) {
+        return 1;
+    }
+    cublasOperation_t opA = (transA == 'N' || transA == 'n') ? CUBLAS_OP_N : CUBLAS_OP_T;
+    cublasOperation_t opB = (transB == 'N' || transB == 'n') ? CUBLAS_OP_N : CUBLAS_OP_T;
+    cublasStatus_t status = cublasDgemm(g_handle, opA, opB, m, n, k, &alpha, A, ldA, B, ldB, &beta, C, ldC);
+    if (status != CUBLAS_STATUS_SUCCESS) {
+        return status;
+    }
+    return 0;
+}
+
 }  // extern "C"
