@@ -32,8 +32,8 @@ const PARQUET_BACKEND = let
     end
 end
 
-const TARGET_COLUMN = :wage
-const FE_COLUMNS = [:worker, :firm, :time]
+const DEFAULT_TARGET_COLUMN = :wage
+const DEFAULT_FE_COLUMNS = [:worker, :firm, :time]
 
 struct CLIOptions
     data_path::String
@@ -41,11 +41,26 @@ struct CLIOptions
     tol::Float64
     method::Symbol
     verbose::Bool
+    target::Symbol
+    regressors::Vector{Symbol}
+    fe_columns::Vector{Symbol}
 end
 
 function usage_and_exit()
-    println("Usage: run_fixedeffects_gpu.jl --data FILE [--cluster-fe 1,2] [--tol 1e-6] [--method cuda] [--verbose]")
+    println("Usage: run_fixedeffects_gpu.jl --data FILE [--cluster-fe 1,2] [--tol 1e-6] [--method cuda] [--verbose] [--y dep] [--x r1,r2] [--fe fe1,fe2]")
     exit(1)
+end
+
+function parse_symbol_list(value::String)::Vector{Symbol}
+    tokens = split(value, ',')
+    out = Symbol[]
+    for tok in tokens
+        stripped = strip(tok)
+        isempty(stripped) && continue
+        push!(out, Symbol(stripped))
+    end
+    unique!(out)
+    return out
 end
 
 function parse_cli()::CLIOptions
@@ -54,6 +69,9 @@ function parse_cli()::CLIOptions
     tol = 1.0e-6
     method_sym = :cuda
     verbose = false
+    target = DEFAULT_TARGET_COLUMN
+    regressors = Symbol[]
+    fe_columns = copy(DEFAULT_FE_COLUMNS)
 
     i = 1
     while i <= length(ARGS)
@@ -78,7 +96,21 @@ function parse_cli()::CLIOptions
         elseif arg == "--method"
             i += 1
             i > length(ARGS) && usage_and_exit()
-    method_sym = Symbol(lowercase(strip(ARGS[i])))
+            method_sym = Symbol(lowercase(strip(ARGS[i])))
+        elseif arg == "--y"
+            i += 1
+            i > length(ARGS) && usage_and_exit()
+            target = Symbol(strip(ARGS[i]))
+        elseif arg == "--x"
+            i += 1
+            i > length(ARGS) && usage_and_exit()
+            regressors = parse_symbol_list(ARGS[i])
+        elseif arg == "--fe"
+            i += 1
+            i > length(ARGS) && usage_and_exit()
+            fe_parsed = parse_symbol_list(ARGS[i])
+            isempty(fe_parsed) && error("--fe requires at least one column name")
+            fe_columns = fe_parsed
         elseif arg == "--verbose"
             verbose = true
         else
@@ -89,7 +121,7 @@ function parse_cli()::CLIOptions
     end
 
     data_path === nothing && usage_and_exit()
-    return CLIOptions(data_path, cluster_dims, tol, normalize_method(method_sym), verbose)
+    return CLIOptions(data_path, cluster_dims, tol, normalize_method(method_sym), verbose, target, regressors, fe_columns)
 end
 
 function normalize_method(sym::Symbol)
@@ -100,26 +132,26 @@ function normalize_method(sym::Symbol)
     return lowercase_sym
 end
 
-function cluster_symbols(dim_ids::Vector{Int})
+function cluster_symbols(dim_ids::Vector{Int}, fe_cols::Vector{Symbol})
     if isempty(dim_ids)
         return Symbol[]
     end
-    max_dim = length(FE_COLUMNS)
+    max_dim = length(fe_cols)
     out = Symbol[]
     for d in dim_ids
         if d < 1 || d > max_dim
             error("Cluster FE dimension $d is out of range (1-$max_dim)")
         end
-        push!(out, FE_COLUMNS[d])
+        push!(out, fe_cols[d])
     end
     unique!(out)
     return out
 end
 
-function build_formula(regressors::Vector{Symbol}, fe_cols::Vector{Symbol})
+function build_formula(target::Symbol, regressors::Vector{Symbol}, fe_cols::Vector{Symbol})
     rhs_terms = vcat(["1"], string.(regressors), ["fe($(string(fe)))" for fe in fe_cols])
     rhs = join(rhs_terms, " + ")
-    formula_expr = Meta.parse("@formula(wage ~ $rhs)")
+    formula_expr = Meta.parse("@formula($(string(target)) ~ $rhs)")
     return eval(formula_expr)
 end
 
@@ -138,7 +170,7 @@ function main()
 
     if opts.method == :gpu && !CUDA.has_cuda()
         @warn "CUDA not available; falling back to CPU execution"
-        opts = CLIOptions(opts.data_path, opts.cluster_dims, opts.tol, :cpu, opts.verbose)
+        opts = CLIOptions(opts.data_path, opts.cluster_dims, opts.tol, :cpu, opts.verbose, opts.target, opts.regressors, opts.fe_columns)
     end
 
     if opts.verbose
@@ -147,18 +179,22 @@ function main()
     df = load_parquet_dataset(opts.data_path)
 
     names(df) |> isempty && error("Parquet file contains no columns.")
-    for col in (TARGET_COLUMN, FE_COLUMNS...)
-        col in propertynames(df) || error("Column $col missing in dataset.")
+    colnames = Symbol.(names(df))
+    available_cols = Set(colnames)
+    for col in (opts.target, opts.fe_columns...)
+        col in available_cols || error("Column $col missing in dataset.")
     end
 
-    colnames = Symbol.(names(df))
-    regressors = [name for name in colnames if name != TARGET_COLUMN && !(name in FE_COLUMNS)]
-    isempty(regressors) && error("No regressors found besides target and FE columns.")
-    sort!(regressors)
+    reg_syms = isempty(opts.regressors) ? [name for name in colnames if name != opts.target && !(name in opts.fe_columns)] : opts.regressors
+    isempty(reg_syms) && error("No regressors specified or found besides target and FE columns.")
+    for col in reg_syms
+        col in available_cols || error("Regressor $col missing in dataset.")
+    end
+    sort!(reg_syms)
 
-    fe_syms = FE_COLUMNS
-    cluster_syms = cluster_symbols(opts.cluster_dims)
-    formula = build_formula(regressors, fe_syms)
+    fe_syms = opts.fe_columns
+    cluster_syms = cluster_symbols(opts.cluster_dims, fe_syms)
+    formula = build_formula(opts.target, reg_syms, fe_syms)
 
     vcov_est = isempty(cluster_syms) ? Vcov.robust() : Vcov.cluster(cluster_syms...)
     if opts.verbose

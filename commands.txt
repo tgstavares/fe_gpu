@@ -1,0 +1,31 @@
+clear all
+local HOME "/srv/projetos/P008/02_testing_fe_estimators"
+cd `HOME'
+
+
+**** Data
+webuse nlswork, clear
+keep ln_wage ttl_exp union idcode year occ_code
+save nlsw_test, replace
+
+local i=12
+foreach nn of numlist 1/`i' {
+	di "Iter: `i'"
+	append using nlsw_test
+	count
+	compress
+	save nlsw_test, replace
+}
+compress
+order idcode occ_code year ln_wage ttl_exp union
+pq save using nlsw_test.parquet, replace
+
+**** Tests // *reg ln_wage i.year ttl_exp union, vce(cluster year)
+*quietly log using "01_regs_stata.txt", text replace
+areg ln_wage ttl_exp union, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
+reghdfe ln_wage ttl_exp union, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
+quietly log close
+
+
+./build/src/fe_gpu --data nlsw_test.bin --cluster-fe 1,2,3 --verbose --fe-tol 1e-10
+
