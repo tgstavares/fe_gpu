@@ -150,11 +150,14 @@ function parse_cli()::CLIOptions
 end
 
 function normalize_method(sym::Symbol)
-    lowercase_sym = Symbol(lowercase(String(sym)))
-    if lowercase_sym == :cuda || lowercase_sym == :gpu
-        return :gpu
+    s = lowercase(String(sym))
+    if s == "cuda" || s == "gpu"
+        return :CUDA
+    elseif s == "cpu"
+        return :cpu
+    else
+        return Symbol(sym)
     end
-    return lowercase_sym
 end
 
 function cluster_symbols(dim_ids::Vector{Int}, fe_cols::Vector{Symbol})
@@ -252,6 +255,7 @@ function main()
     if isempty(instrument_syms)
         instrument_syms = filter(col -> startswith(lowercase(String(col)), "iv"), colnames)
     end
+    instrument_syms = unique(instrument_syms)
     for sym in instrument_syms
         sym in available_cols || error("Instrument column $sym missing in dataset.")
     end
@@ -259,9 +263,8 @@ function main()
         if isempty(iv_reg_syms)
             build_formula(opts.target, reg_syms, fe_syms)
         else
-            instruments = unique(vcat(instrument_syms, setdiff(reg_syms, iv_reg_syms)))
-            isempty(instruments) && error("No instrument columns available. Use --iv-vars to specify instrument names.")
-            build_iv_formula(opts.target, reg_syms, fe_syms, iv_reg_syms, instruments)
+            isempty(instrument_syms) && error("No instrument columns available. Use --iv-vars to specify instrument names.")
+            build_iv_formula(opts.target, reg_syms, fe_syms, iv_reg_syms, instrument_syms)
         end
 
     vcov_est = isempty(cluster_syms) ? Vcov.robust() : Vcov.cluster(cluster_syms...)

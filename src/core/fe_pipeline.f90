@@ -429,7 +429,7 @@ contains
             real(real64) :: rss, sigma2, t_start, t_end, weight
             integer :: kept, param_count, intercept_count
             integer(int64) :: df
-            integer(int64) :: bytes_obs, bytes_reg, bytes_clusters
+            integer(int64) :: bytes_obs, bytes_reg, bytes_cluster_ids
             integer :: n_clusters, min_cluster_size
             real(real64), allocatable, target :: meat_full(:, :)
             real(real64), allocatable :: meat_kept(:, :), cov_mat(:, :), cov_accum(:, :)
@@ -491,8 +491,8 @@ contains
                 min_cluster_size = huge(0)
                 allocate(cov_accum(kept, kept))
                 cov_accum = 0.0_real64
-                d_cluster_temp%ptr = c_null_ptr
-                d_cluster_temp%size_bytes = 0_int64
+                bytes_cluster_ids = gpu_data%n_obs * INT32_BYTES
+                call fe_device_alloc(d_cluster_temp, bytes_cluster_ids)
 
                 do mask = 1, ishft(1, n_cluster_dims) - 1
                     call cpu_time(subset_start)
@@ -529,18 +529,22 @@ contains
                         ids_buffer = gpu_data%fe_dims(dim_index)%fe_ids
                     else
                         used_gpu_ids = .false.
-                        call build_gpu_cluster_ids_helper(gpu_data, subset_dims, group_sizes, d_cluster_temp, n_clusters, &
-                            status_build)
-                        if (status_build == 0 .and. n_clusters > 0) then
-                            min_cluster_size = min(min_cluster_size, n_clusters)
-                            ids_buffer = d_cluster_temp
-                            used_gpu_ids = .true.
-                        else
-                            if (c_associated(d_cluster_temp%ptr)) then
-                                call fe_device_free(d_cluster_temp)
-                                d_cluster_temp%ptr = c_null_ptr
-                                d_cluster_temp%size_bytes = 0_int64
+                        if (.not. result%is_iv) then
+                            call build_gpu_cluster_ids_helper(gpu_data, subset_dims, group_sizes, d_cluster_temp, &
+                                n_clusters, status_build)
+                            if (status_build == 0 .and. n_clusters > 0) then
+                                min_cluster_size = min(min_cluster_size, n_clusters)
+                                ids_buffer = d_cluster_temp
+                                used_gpu_ids = .true.
+                            else
+                                if (c_associated(d_cluster_temp%ptr)) then
+                                    call fe_device_free(d_cluster_temp)
+                                    d_cluster_temp%ptr = c_null_ptr
+                                    d_cluster_temp%size_bytes = 0_int64
+                                end if
                             end if
+                        end if
+                        if (.not. used_gpu_ids) then
                             if (.not. allocated(combo_ids)) allocate(combo_ids(int(gpu_data%n_obs)))
                             call build_cluster_ids(host%fe_ids, group_sizes, subset_dims, combo_ids, n_clusters, status_build)
                             if (status_build /= 0) then
@@ -556,16 +560,14 @@ contains
                                 exit
                             end if
                             min_cluster_size = min(min_cluster_size, n_clusters)
-                            bytes_clusters = gpu_data%n_obs * INT32_BYTES
-                            call fe_device_alloc(d_cluster_temp, bytes_clusters)
-                            call fe_memcpy_htod(d_cluster_temp, c_loc(combo_ids(1)), bytes_clusters)
+                            call fe_memcpy_htod(d_cluster_temp, c_loc(combo_ids(1)), bytes_cluster_ids)
                             ids_buffer = d_cluster_temp
                         end if
                     end if
                     call cpu_time(subset_mid)
 
-                    bytes_clusters = int(n_clusters, int64) * int(size(result%beta), int64) * REAL64_BYTES
-                    call fe_device_alloc(d_scores, bytes_clusters)
+                    bytes_reg = int(n_clusters, int64) * int(size(result%beta), int64) * REAL64_BYTES
+                    call fe_device_alloc(d_scores, bytes_reg)
                     call fe_device_memset(d_scores, 0)
                     call fe_gpu_cluster_scores(d_residual, reg_matrix, ids_buffer, gpu_data%n_obs, size(result%beta), &
                         n_clusters, d_scores)
@@ -587,11 +589,7 @@ contains
 
                     call fe_device_free(d_scores)
                     call fe_device_free(d_meat)
-                    if (subset_size > 1 .and. c_associated(d_cluster_temp%ptr)) then
-                        call fe_device_free(d_cluster_temp)
-                        d_cluster_temp%ptr = c_null_ptr
-                        d_cluster_temp%size_bytes = 0_int64
-                    end if
+                    ! keep device buffer for reuse; freed after clustering loop
                     deallocate(subset_dims)
                     call cpu_time(subset_end)
                     if (verbose) then
@@ -644,7 +642,6 @@ contains
             type(c_ptr), allocatable, target :: ptrs(:)
             integer(int64) :: stride_accum, dim_size
             integer(int64), parameter :: KEY_LIMIT = 2_int64 ** 60
-            integer(int64) :: bytes_needed
 
             subset_size = size(subset_dims)
             if (subset_size <= 1) then
@@ -685,13 +682,8 @@ contains
                 ptrs(i) = dataset%fe_dims(subset_dims(i))%fe_ids%ptr
             end do
 
-            bytes_needed = dataset%n_obs * INT32_BYTES
-            call fe_device_alloc(ids_buf, bytes_needed)
             call fe_gpu_build_multi_cluster_ids(ptrs, stride_vals, subset_size, dataset%n_obs, ids_buf, n_clusters, status)
-            if (status /= 0) then
-                call fe_device_free(ids_buf)
-                n_clusters = 0
-            end if
+            if (status /= 0) n_clusters = 0
 
             deallocate(ptrs)
             deallocate(stride_vals)

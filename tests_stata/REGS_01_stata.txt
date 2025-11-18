@@ -1,0 +1,74 @@
+r; t=0.00 0:44:25
+
+. *** FE
+. // areg      ln_wage hours ttl_exp union tenure, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
+. // reghdfe   ln_wage hours ttl_exp union tenure, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
+. // reghdfejl ln_wage hours ttl_exp union tenure, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
+. // *** 
+. *ivregress 2sls ln_wage (hours=tenure) ttl_exp union, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
+. 
+. *ivreghdfe      ln_wage (hours wks_work = tenure wks_ue) ttl_exp union, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
+. *ivreghdfe      ln_wage (hours = tenure) ttl_exp union, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
+. *reghdfejl      ln_wage (hours = tenure) ttl_exp union, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
+. *jlhdfe_alt     ln_wage (hours = tenure) ttl_exp union, absorb(idcode occ_code year) vce(cluster idcode occ_code year) method(cuda) threads(1)
+>  outprefix(fem_out) display
+. ivreghdfe      ln_wage (hours = tenure) ttl_exp union, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
+(MWFE estimator converged in 18 iterations)
+
+IV (2SLS) estimation
+--------------------
+
+Estimates efficient for homoskedasticity only
+Statistics robust to heteroskedasticity and clustering on idcode and occ_code
+
+Number of clusters (idcode) =     4126                Number of obs =   604896
+Number of clusters (occ_code) =     13                F(  3,    12) =     6.69
+                                                      Prob > F      =   0.0066
+Total (centered) SS     =  31318.62461                Centered R2   = -10.6372
+Total (uncentered) SS   =  31318.62461                Uncentered R2 = -10.6372
+Residual SS             =  364462.1561                Root MSE      =    .7762
+
+------------------------------------------------------------------------------
+             |               Robust
+     ln_wage | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+       hours |   .1166294   .0696696     1.67   0.120    -.0351675    .2684263
+     ttl_exp |  -.0345471   .0448953    -0.77   0.456    -.1323655    .0632714
+       union |  -.0489829    .107132    -0.46   0.656    -.2824034    .1844376
+------------------------------------------------------------------------------
+Underidentification test (Kleibergen-Paap rk LM statistic):              1.465
+                                                   Chi-sq(1) P-val =    0.2261
+------------------------------------------------------------------------------
+Weak identification test (Cragg-Donald Wald F statistic):              315.757
+                         (Kleibergen-Paap rk Wald F statistic):          2.564
+Stock-Yogo weak ID test critical values: 10% maximal IV size             16.38
+                                         15% maximal IV size              8.96
+                                         20% maximal IV size              6.66
+                                         25% maximal IV size              5.53
+Source: Stock-Yogo (2005).  Reproduced by permission.
+NB: Critical values are for Cragg-Donald F statistic and i.i.d. errors.
+------------------------------------------------------------------------------
+Hansen J statistic (overidentification test of all instruments):         0.000
+                                                 (equation exactly identified)
+------------------------------------------------------------------------------
+Instrumented:         hours
+Included instruments: ttl_exp union
+Excluded instruments: tenure
+Partialled-out:       _cons
+                      nb: total SS, model F and R2s are after partialling-out;
+                          any small-sample adjustments include partialled-out
+                          variables in regressor count K
+------------------------------------------------------------------------------
+
+Absorbed degrees of freedom:
+-----------------------------------------------------+
+ Absorbed FE | Categories  - Redundant  = Num. Coefs |
+-------------+---------------------------------------|
+      idcode |      4126        4126           0    *|
+    occ_code |        13          13           0    *|
+        year |        12          12           0    *|
+-----------------------------------------------------+
+* = FE nested within cluster; treated as redundant for DoF computation
+r; t=9.74 0:44:34
+
+. capture quietly log close
