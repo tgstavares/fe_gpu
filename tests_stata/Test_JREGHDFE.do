@@ -8,7 +8,7 @@ webuse nlswork, clear
 keep ln_wage ttl_exp union idcode year occ_code hours tenure wks_work wks_ue
 save nlsw_test, replace
 
-local i=5
+local i=1
 foreach nn of numlist 1/`i' {
 	di "Iter: `nn'"
 	append using nlsw_test

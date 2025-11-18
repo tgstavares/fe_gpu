@@ -69,10 +69,10 @@ contains
         integer :: it0, it1, itrate
         logical, allocatable :: is_endog(:)
         integer, allocatable :: idx_endog(:), idx_exog(:)
-        integer :: n_endog, n_exog, n_total_instr
+        integer :: n_endog, n_exog, n_total_instr, n_selected_instr, n_available_instr
         type(fe_device_buffer) :: d_Z_aug
         character(len=256) :: warn_buf
-        integer(int32), allocatable :: col_indices(:)
+        integer(int32), allocatable :: idx_instruments(:), tmp_instr(:)
         logical :: use_iv
 
         call system_clock(count_rate = itrate)
@@ -121,7 +121,7 @@ contains
 
         call fe_gpu_dataset_upload(host, group_sizes, gpu_data)
         result%is_iv = .false.
-        result%n_instruments = header%n_instruments
+        result%n_instruments = 0
         call fe_gpu_linalg_initialize()
 
         
@@ -199,11 +199,58 @@ contains
             n_exog = 0
         end if
 
-        n_total_instr = n_exog + header%n_instruments
+        n_available_instr = header%n_instruments
+        n_selected_instr = 0
+        if (n_available_instr <= 0) then
+            if (allocated(cfg%iv_instrument_cols) .and. size(cfg%iv_instrument_cols) > 0) then
+                call log_warn('Dataset contains no instrument columns; ignoring --iv-z-cols.')
+            end if
+            allocate(idx_instruments(0))
+        else
+            if (allocated(cfg%iv_instrument_cols) .and. size(cfg%iv_instrument_cols) > 0) then
+                allocate(idx_instruments(size(cfg%iv_instrument_cols)))
+                do i = 1, size(cfg%iv_instrument_cols)
+                    if (cfg%iv_instrument_cols(i) < 1 .or. cfg%iv_instrument_cols(i) > n_available_instr) then
+                        write(warn_buf, '("Ignoring instrument column index ",I0," (out of range).")') &
+                            cfg%iv_instrument_cols(i)
+                        call log_warn(trim(warn_buf))
+                        cycle
+                    end if
+                    n_selected_instr = n_selected_instr + 1
+                    idx_instruments(n_selected_instr) = int(cfg%iv_instrument_cols(i), int32)
+                end do
+                if (n_selected_instr == 0) then
+                    call log_warn('No valid instrument indices supplied; using all instrument columns.')
+                    deallocate(idx_instruments)
+                    allocate(idx_instruments(n_available_instr))
+                    do i = 1, n_available_instr
+                        idx_instruments(i) = int(i, int32)
+                    end do
+                    n_selected_instr = n_available_instr
+                else
+                    if (n_selected_instr < size(cfg%iv_instrument_cols)) then
+                        call log_warn('Some instrument column indices were ignored because they are out of range.')
+                    end if
+                    if (n_selected_instr < size(idx_instruments)) then
+                        allocate(tmp_instr(n_selected_instr))
+                        tmp_instr = idx_instruments(1:n_selected_instr)
+                        call move_alloc(tmp_instr, idx_instruments)
+                    end if
+                end if
+            else
+                allocate(idx_instruments(n_available_instr))
+                do i = 1, n_available_instr
+                    idx_instruments(i) = int(i, int32)
+                end do
+                n_selected_instr = n_available_instr
+            end if
+        end if
+
+        n_total_instr = n_exog + n_selected_instr
         use_iv = (n_endog > 0)
-        if (use_iv .and. n_total_instr < n_endog) then
-            write(warn_buf, '("Insufficient instruments (",I0," available for ",I0," endogenous regressors); reverting to OLS.")') &
-                n_total_instr, n_endog
+        if (use_iv .and. n_selected_instr < n_endog) then
+            write(warn_buf, '("Insufficient instruments (",I0," instrument columns for ",I0,' // &
+                '" endogenous regressors); reverting to OLS.")') n_selected_instr, n_endog
             call log_warn(trim(warn_buf))
             use_iv = .false.
         end if
@@ -285,9 +332,9 @@ contains
                 call fe_gpu_copy_columns(gpu_data%d_W, gpu_data%n_obs, col_idx, d_Z_aug, 0)
                 deallocate(col_idx)
             end if
-            if (header%n_instruments > 0) then
-                allocate(col_idx(header%n_instruments))
-                col_idx = [(int(i, int32), i = 1, header%n_instruments)]
+            if (n_selected_instr > 0) then
+                allocate(col_idx(n_selected_instr))
+                col_idx = idx_instruments
                 call fe_gpu_copy_columns(gpu_data%d_Z, gpu_data%n_obs, col_idx, d_Z_aug, n_exog)
                 deallocate(col_idx)
             end if
@@ -430,7 +477,7 @@ contains
             integer :: kept, param_count, intercept_count
             integer(int64) :: df
             integer(int64) :: bytes_obs, bytes_reg, bytes_cluster_ids
-            integer :: n_clusters, min_cluster_size
+            integer :: n_clusters, min_cluster_size, min_single_cluster
             real(real64), allocatable, target :: meat_full(:, :)
             real(real64), allocatable :: meat_kept(:, :), cov_mat(:, :), cov_accum(:, :)
             real(real64), allocatable :: diag_vals(:)
@@ -441,7 +488,7 @@ contains
             logical :: has_clusters, cluster_success
             character(len=256) :: warn_msg
             type(fe_device_buffer) :: ids_buffer
-            real(real64) :: subset_start, subset_mid, subset_end
+            real(real64) :: subset_start, subset_mid, subset_end, subset_weight, scalar, denom_adj
             character(len=64) :: subset_label
             type(fe_device_buffer) :: reg_matrix
             logical :: use_projected, used_gpu_ids
@@ -489,6 +536,7 @@ contains
             else
                 n_cluster_dims = size(result%cluster_fe_dims)
                 min_cluster_size = huge(0)
+                min_single_cluster = huge(0)
                 allocate(cov_accum(kept, kept))
                 cov_accum = 0.0_real64
                 bytes_cluster_ids = gpu_data%n_obs * INT32_BYTES
@@ -526,6 +574,7 @@ contains
                             exit
                         end if
                         min_cluster_size = min(min_cluster_size, n_clusters)
+                        min_single_cluster = min(min_single_cluster, n_clusters)
                         ids_buffer = gpu_data%fe_dims(dim_index)%fe_ids
                     else
                         used_gpu_ids = .false.
@@ -584,7 +633,11 @@ contains
                     allocate(cov_mat(kept, kept))
                     meat_kept = meat_full(idx, idx)
                     cov_mat = matmul(Q_inv_kept, matmul(meat_kept, Q_inv_kept))
-                    cov_accum = cov_accum + weight * cov_mat
+                    subset_weight = weight
+                    if (n_clusters > 1) then
+                        subset_weight = subset_weight * real(n_clusters, real64) / real(max(1, n_clusters - 1), real64)
+                    end if
+                    cov_accum = cov_accum + subset_weight * cov_mat
                     deallocate(meat_full, meat_kept, cov_mat)
 
                     call fe_device_free(d_scores)
@@ -601,11 +654,18 @@ contains
                 end do
 
                 if (cluster_success) then
+                    scalar = 1.0_real64
+                    denom_adj = real(max(1_int64, gpu_data%n_obs - int(param_count, int64)), real64)
+                    scalar = scalar * real(max(1_int64, gpu_data%n_obs - 1_int64), real64) / denom_adj
+                    if (min_single_cluster > 1) then
+                        scalar = scalar * real(min_single_cluster, real64) / real(min_single_cluster - 1, real64)
+                    end if
+                    cov_accum = cov_accum * scalar
                     do i = 1, kept
                         result%se(idx(i)) = sqrt(max(0.0_real64, cov_accum(i, i)))
                     end do
-                    if (min_cluster_size < huge(0)) then
-                        result%dof_resid = max(1_int64, int(min_cluster_size, int64) - 1_int64)
+                    if (min_single_cluster < huge(0)) then
+                        result%dof_resid = max(1_int64, int(min_single_cluster, int64) - 1_int64)
                     end if
                 else
                     call log_warn('Cluster-robust SEs failed; falling back to homoskedastic estimates.')

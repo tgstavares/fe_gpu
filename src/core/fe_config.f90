@@ -11,6 +11,7 @@ module fe_config
         logical :: verbose = .false.
         integer(int32), allocatable :: cluster_fe_dims(:)
         integer(int32), allocatable :: iv_regressors(:)
+        integer(int32), allocatable :: iv_instrument_cols(:)
     end type fe_runtime_config
 
     public :: init_default_config
@@ -28,6 +29,7 @@ contains
         cfg%data_path = 'data.bin'
         allocate(cfg%cluster_fe_dims(0))
         allocate(cfg%iv_regressors(0))
+        allocate(cfg%iv_instrument_cols(0))
     end subroutine init_default_config
 
     function describe_config(cfg) result(message)
@@ -45,11 +47,12 @@ contains
         character(len=*), intent(inout) :: buf
         character(len=*), intent(in) :: cluster_str
         type(fe_runtime_config), intent(in) :: cfg
-        character(len=*), parameter :: fmt = &
-            '("data_path=",A,", tol=",ES10.3,", max_iter=",I0,", use_gpu=",L1,", verbose=",L1,", cluster_fe=",A,", iv_cols=",A,")")'
+        character(len=*), parameter :: fmt = '("data_path=",A,", tol=",ES10.3,", max_iter=",I0,", use_gpu=",L1,' // &
+            '", verbose=",L1,", cluster_fe=",A,", iv_cols=",A,", iv_z=",A,")")'
 
         write(buf, fmt) trim(cfg%data_path), cfg%fe_tolerance, cfg%fe_max_iterations, cfg%use_gpu, cfg%verbose, &
-            trim(cluster_str), trim(format_cluster_dims(cfg%iv_regressors))
+            trim(cluster_str), trim(format_cluster_dims(cfg%iv_regressors)), &
+            trim(format_cluster_dims(cfg%iv_instrument_cols))
     end subroutine describe_to_buffer
 
     function format_cluster_dims(dims) result(out)
