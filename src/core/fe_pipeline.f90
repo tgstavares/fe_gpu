@@ -42,6 +42,10 @@ module fe_pipeline
         integer :: n_instruments = 0
         real(real64), allocatable :: beta(:)
         real(real64), allocatable :: se(:)
+        character(len=:), allocatable :: coef_names(:)
+        character(len=:), allocatable :: depvar_name
+        character(len=:), allocatable :: cluster_labels(:)
+        character(len=:), allocatable :: iv_labels(:)
     end type fe_estimation_result
 
     public :: fe_gpu_estimate
@@ -101,7 +105,18 @@ contains
         if (allocated(result%beta)) deallocate(result%beta)
         if (allocated(result%se)) deallocate(result%se)
         if (allocated(result%cluster_fe_dims)) deallocate(result%cluster_fe_dims)
+        if (allocated(result%coef_names)) deallocate(result%coef_names)
+        if (allocated(result%depvar_name)) deallocate(result%depvar_name)
+        if (allocated(result%cluster_labels)) deallocate(result%cluster_labels)
+        if (allocated(result%iv_labels)) deallocate(result%iv_labels)
+        if (allocated(header%depvar_name)) then
+            if (len_trim(header%depvar_name) > 0) then
+                allocate(character(len=len_trim(header%depvar_name)) :: result%depvar_name)
+                result%depvar_name = trim(header%depvar_name)
+            end if
+        end if
         call initialize_cluster_dims(cfg%cluster_fe_dims, header%n_fe, result%cluster_fe_dims)
+        call initialize_cluster_labels(header)
 
         if (size(group_sizes) /= header%n_fe) then
             call log_warn('Group size metadata does not match header; skipping estimation.')
@@ -140,6 +155,7 @@ contains
         allocate(result%se(max(0, k)))
         result%beta = 0.0_real64
         result%se = 0.0_real64
+        call initialize_coefficient_names(header, k)
 
         if (k <= 0) then
             call cleanup()
@@ -193,12 +209,14 @@ contains
             allocate(idx_exog(n_exog))
             if (n_endog > 0) idx_endog = pack([(i, i = 1, k)], is_endog)
             if (n_exog > 0) idx_exog = pack([(i, i = 1, k)], .not. is_endog)
+            call initialize_iv_labels(header, cfg%iv_regressors)
         else
             allocate(is_endog(0))
             allocate(idx_endog(0))
             allocate(idx_exog(0))
             n_endog = 0
             n_exog = 0
+            call initialize_iv_labels(header, cfg%iv_regressors)
         end if
 
         n_available_instr = header%n_instruments
@@ -299,6 +317,148 @@ contains
         result%time_se = real(it1 - it0) / real(itrate)
 
     contains
+
+        subroutine initialize_coefficient_names(header_local, n_reg)
+            type(fe_dataset_header), intent(in) :: header_local
+            integer, intent(in) :: n_reg
+            integer :: name_len, i
+            character(len=64) :: label_buf
+
+            if (allocated(result%coef_names)) deallocate(result%coef_names)
+            if (n_reg <= 0) then
+                allocate(character(len=1) :: result%coef_names(0))
+                return
+            end if
+
+            name_len = 0
+            if (allocated(header_local%regressor_names)) then
+                if (size(header_local%regressor_names) == n_reg) then
+                    do i = 1, n_reg
+                        name_len = max(name_len, len_trim(header_local%regressor_names(i)))
+                    end do
+                end if
+            end if
+            do i = 1, n_reg
+                write(label_buf, '(A,I0)') 'beta_', i
+                name_len = max(name_len, len_trim(label_buf))
+            end do
+            if (name_len <= 0) name_len = 12
+
+            allocate(character(len=name_len) :: result%coef_names(n_reg))
+            result%coef_names = ''
+            if (allocated(header_local%regressor_names) .and. size(header_local%regressor_names) == n_reg) then
+                do i = 1, n_reg
+                    call assign_padded(result%coef_names(i), trim(header_local%regressor_names(i)))
+                end do
+            else
+                do i = 1, n_reg
+                    write(label_buf, '(A,I0)') 'beta_', i
+                    call assign_padded(result%coef_names(i), trim(label_buf))
+                end do
+            end if
+        end subroutine initialize_coefficient_names
+
+        subroutine initialize_cluster_labels(header_local)
+            type(fe_dataset_header), intent(in) :: header_local
+            integer :: count, i, label_len
+            character(len=64) :: label_buf
+
+            if (allocated(result%cluster_labels)) deallocate(result%cluster_labels)
+            count = size(result%cluster_fe_dims)
+            if (count <= 0) then
+                allocate(character(len=1) :: result%cluster_labels(0))
+                return
+            end if
+
+            label_len = 0
+            do i = 1, count
+                label_buf = cluster_dimension_label(header_local, result%cluster_fe_dims(i))
+                label_len = max(label_len, len_trim(label_buf))
+            end do
+            if (label_len <= 0) label_len = 8
+
+            allocate(character(len=label_len) :: result%cluster_labels(count))
+            result%cluster_labels = ''
+            do i = 1, count
+                label_buf = cluster_dimension_label(header_local, result%cluster_fe_dims(i))
+                call assign_padded(result%cluster_labels(i), trim(label_buf))
+            end do
+        end subroutine initialize_cluster_labels
+
+        subroutine initialize_iv_labels(header_local, iv_indices)
+            type(fe_dataset_header), intent(in) :: header_local
+            integer(int32), intent(in) :: iv_indices(:)
+            integer :: count, i, name_len, idx
+            character(len=64) :: label_buf
+
+            if (allocated(result%iv_labels)) deallocate(result%iv_labels)
+            count = size(iv_indices)
+            if (count <= 0) then
+                allocate(character(len=1) :: result%iv_labels(0))
+                return
+            end if
+
+            name_len = 0
+            do i = 1, count
+                idx = int(iv_indices(i))
+                label_buf = regressor_label_from_header(header_local, idx)
+                name_len = max(name_len, len_trim(label_buf))
+            end do
+            if (name_len <= 0) name_len = 8
+            allocate(character(len=name_len) :: result%iv_labels(count))
+            result%iv_labels = ''
+            do i = 1, count
+                idx = int(iv_indices(i))
+                label_buf = regressor_label_from_header(header_local, idx)
+                call assign_padded(result%iv_labels(i), trim(label_buf))
+            end do
+        end subroutine initialize_iv_labels
+
+        function regressor_label_from_header(header_local, idx) result(text)
+            type(fe_dataset_header), intent(in) :: header_local
+            integer, intent(in) :: idx
+            character(len=64) :: text
+
+            text = ''
+            if (idx >= 1) then
+                if (allocated(header_local%regressor_names)) then
+                    if (idx <= size(header_local%regressor_names)) then
+                        if (len_trim(header_local%regressor_names(idx)) > 0) then
+                            text = trim(header_local%regressor_names(idx))
+                            return
+                        end if
+                    end if
+                end if
+            end if
+            write(text, '(A,I0)') 'Reg ', idx
+        end function regressor_label_from_header
+
+        function cluster_dimension_label(header_local, dim_index) result(text)
+            type(fe_dataset_header), intent(in) :: header_local
+            integer, intent(in) :: dim_index
+            character(len=64) :: text
+
+            text = ''
+            if (allocated(header_local%fe_names)) then
+                if (dim_index >= 1 .and. dim_index <= size(header_local%fe_names)) then
+                    if (len_trim(header_local%fe_names(dim_index)) > 0) then
+                        text = trim(header_local%fe_names(dim_index))
+                        return
+                    end if
+                end if
+            end if
+            write(text, '(A,I0)') 'FE dim ', dim_index
+        end function cluster_dimension_label
+
+        subroutine assign_padded(dest, source)
+            character(len=*), intent(inout) :: dest
+            character(len=*), intent(in) :: source
+            integer :: copy_len
+
+            dest = ''
+            copy_len = min(len_trim(source), len(dest))
+            if (copy_len > 0) dest(1:copy_len) = source(1:copy_len)
+        end subroutine assign_padded
 
         subroutine build_ols_normal_equations(Q_out, b_out)
             real(real64), intent(out), target :: Q_out(:, :)

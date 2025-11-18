@@ -4,7 +4,7 @@
 import argparse
 import pathlib
 import struct
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 import numpy as np
 
@@ -49,6 +49,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--parquet-output', type=pathlib.Path, default=None,
                         help='Optional Parquet output path for Julia/analytics interoperability')
     return parser.parse_args()
+
+
+def write_string(f, text: str) -> None:
+    encoded = text.encode('utf-8')
+    f.write(struct.pack('<i', len(encoded)))
+    if encoded:
+        f.write(encoded)
+
+
+def write_string_list(f, items: Sequence[str]) -> None:
+    f.write(struct.pack('<i', len(items)))
+    for item in items:
+        write_string(f, item)
+
+
+def write_metadata_block(f, metadata: Optional[dict]) -> None:
+    if not metadata:
+        return
+    f.write(b'META')
+    f.write(struct.pack('<i', 1))
+    write_string(f, metadata.get('y', ''))
+    write_string_list(f, metadata.get('x', []))
+    write_string_list(f, metadata.get('iv', []))
+    write_string_list(f, metadata.get('fe', []))
+    write_string(f, metadata.get('cluster', ''))
+    write_string(f, metadata.get('weights', ''))
 
 
 def build_panel(args: argparse.Namespace):
@@ -109,6 +135,9 @@ def build_panel(args: argparse.Namespace):
         W = np.column_stack((tenure, sick_shock, extras.T)).astype(np.float64)
     else:
         W = np.column_stack((tenure, sick_shock)).astype(np.float64)
+    regressor_names = ['tenure', 'sick_shock']
+    if extra_vars > 0:
+        regressor_names.extend([f'extra_{j + 1}' for j in range(extra_vars)])
 
     iv_count = max(0, args.iv_vars)
     if iv_count > 0:
@@ -126,6 +155,7 @@ def build_panel(args: argparse.Namespace):
             instruments[j, :] += rng.normal(0.0, 0.1, size=n_obs)
     else:
         instruments = np.zeros((0, n_obs), dtype=np.float64)
+    instrument_names = [f'iv_{j + 1}' for j in range(instruments.shape[0])]
 
     fe_ids = np.vstack((worker_obs, firm_obs, time_obs)).astype(np.int32)
 
@@ -144,11 +174,12 @@ def build_panel(args: argparse.Namespace):
         for j in range(instruments.shape[0]):
             parquet_columns[f'iv_{j + 1}'] = instruments[j].astype(np.float64, copy=False)
 
-    return wages, W, instruments, fe_ids, parquet_columns
+    return wages, W, instruments, fe_ids, parquet_columns, regressor_names, instrument_names
 
 
 def write_binary(path: pathlib.Path, wages: np.ndarray, W: np.ndarray, fe_ids: np.ndarray,
-                 precision_flag: int, instruments: Optional[np.ndarray] = None):
+                 precision_flag: int, metadata: Optional[dict] = None,
+                 instruments: Optional[np.ndarray] = None):
     n_obs = wages.shape[0]
     n_reg = W.shape[1]
     n_instr = 0 if instruments is None else instruments.shape[0]
@@ -176,6 +207,7 @@ def write_binary(path: pathlib.Path, wages: np.ndarray, W: np.ndarray, fe_ids: n
             f.write(Z_out.tobytes(order='F'))
         for d in range(n_fe):
             f.write(fe_ids[d].astype('<i4', copy=False).tobytes(order='C'))
+        write_metadata_block(f, metadata)
 
 
 def write_parquet(path: pathlib.Path, columns: Dict[str, np.ndarray]):
@@ -192,8 +224,24 @@ def write_parquet(path: pathlib.Path, columns: Dict[str, np.ndarray]):
 
 def main():
     args = parse_args()
-    wages, W, Z, fe_ids, parquet_columns = build_panel(args)
-    write_binary(args.output, wages, W, fe_ids, PRECISION_FLAGS[args.precision], instruments=Z if Z.size > 0 else None)
+    wages, W, Z, fe_ids, parquet_columns, reg_names, instrument_names = build_panel(args)
+    metadata = {
+        'y': 'wage',
+        'x': reg_names,
+        'iv': instrument_names,
+        'fe': ['worker', 'firm', 'time'],
+        'cluster': '',
+        'weights': '',
+    }
+    write_binary(
+        args.output,
+        wages,
+        W,
+        fe_ids,
+        PRECISION_FLAGS[args.precision],
+        metadata=metadata,
+        instruments=Z if Z.size > 0 else None,
+    )
     bytes_len = args.output.stat().st_size
     print(f"Wrote {args.output} with {W.shape[0]} observations, {W.shape[1]} regressors, "
           f"{Z.shape[0]} instruments, {fe_ids.shape[0]} FE dims ({bytes_len} bytes)")

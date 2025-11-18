@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import pathlib
+import struct
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -104,6 +105,32 @@ def parallel_relabel(df: pd.DataFrame, columns: Sequence[str], workers: int, vlo
             results[col] = future.result()
     return [results[col] for col in columns]
 
+def write_string(f, text: str) -> None:
+    data = text.encode("utf-8")
+    f.write(struct.pack("<i", len(data)))
+    if data:
+        f.write(data)
+
+
+def write_string_list(f, items: Sequence[str]) -> None:
+    f.write(struct.pack("<i", len(items)))
+    for item in items:
+        write_string(f, item)
+
+
+def write_metadata_block(f, metadata: Optional[dict]) -> None:
+    if not metadata:
+        return
+    f.write(b"META")
+    f.write(struct.pack("<i", 1))  # version
+    write_string(f, metadata.get("y", ""))
+    write_string_list(f, metadata.get("x", []))
+    write_string_list(f, metadata.get("iv", []))
+    write_string_list(f, metadata.get("fe", []))
+    write_string(f, metadata.get("cluster", ""))
+    write_string(f, metadata.get("weights", ""))
+
+
 def write_binary(path: pathlib.Path,
                  y: np.ndarray,
                  X: np.ndarray,
@@ -112,9 +139,8 @@ def write_binary(path: pathlib.Path,
                  instruments: Optional[np.ndarray],
                  cluster: Optional[np.ndarray],
                  weights: Optional[np.ndarray],
-                 precision: str) -> None:
-    import struct
-
+                 precision: str,
+                 metadata: Optional[dict]) -> None:
     n_obs = y.shape[0]
     n_reg = X.shape[1]
     n_instr = 0 if instruments is None else instruments.shape[1]
@@ -148,6 +174,7 @@ def write_binary(path: pathlib.Path,
             cluster_arr.tofile(f)
         if has_weights:
             weight_arr.tofile(f)
+        write_metadata_block(f, metadata)
 
 def main() -> None:
     args = parse_args()
@@ -219,7 +246,16 @@ def main() -> None:
 
     vlog(f"Writing binary output to {args.output}")
     t_write0 = time.perf_counter()
-    write_binary(args.output, y, X, fe_ids, instruments=Z, cluster=cluster_arr, weights=weight_arr, precision=args.precision)
+    metadata = {
+        "y": args.y,
+        "x": args.x,
+        "iv": args.iv,
+        "fe": args.fe,
+        "cluster": args.cluster or "",
+        "weights": args.weights or "",
+    }
+    write_binary(args.output, y, X, fe_ids, instruments=Z, cluster=cluster_arr, weights=weight_arr,
+                 precision=args.precision, metadata=metadata)
     t_write1 = time.perf_counter()
     vlog(f"Wrote binary file in {t_write1 - t_write0:.3f} s")
 

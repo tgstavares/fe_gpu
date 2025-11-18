@@ -14,6 +14,13 @@ module fe_types
         logical        :: has_cluster   = .false.
         logical        :: has_weights   = .false.
         integer(int32) :: precision_flag = PRECISION_FLOAT64
+        integer(int64) :: metadata_bytes = 0_int64
+        character(len=:), allocatable :: depvar_name
+        character(len=:), allocatable :: regressor_names(:)
+        character(len=:), allocatable :: instrument_names(:)
+        character(len=:), allocatable :: fe_names(:)
+        character(len=:), allocatable :: cluster_name
+        character(len=:), allocatable :: weight_name
     contains
         procedure :: precision_bytes => fe_header_precision_bytes
         procedure :: summary => fe_header_summary

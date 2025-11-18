@@ -11,6 +11,10 @@ module fe_data_io
     integer(int64), parameter :: REAL32_BYTES = 4_int64
     integer(int64), parameter :: REAL64_BYTES = 8_int64
 
+    type :: text_entry
+        character(len=:), allocatable :: value
+    end type text_entry
+
     public :: load_dataset_from_file
     public :: release_host_arrays
 
@@ -54,6 +58,7 @@ contains
         if (header%has_weights) then
             call read_numeric_vector(unit, header%n_obs, header%precision_flag, host%weights)
         end if
+        call read_metadata(unit, header)
 
         close(unit)
 
@@ -78,10 +83,11 @@ contains
         integer(int32) :: tmp_vals(4)
         integer :: ios
         integer(int64) :: total_new_64, total_new_32, total_old_64, total_old_32
-        integer(int64) :: base_bytes, expected_total
+        integer(int64) :: base_bytes, expected_total, extra_bytes
         logical :: match_new, match_old
         integer(int32) :: tmp_i32
 
+        header%metadata_bytes = 0_int64
         ! First pass: read assuming new-format header to determine layout.
         read(unit, iostat=ios) header%n_obs
         call ensure_io_success(ios, 'reading N')
@@ -167,9 +173,11 @@ contains
 
         if (file_size == total_new_64) then
             header%precision_flag = PRECISION_FLOAT64
+            header%metadata_bytes = 0_int64
             return
         else if (file_size == total_new_32) then
             header%precision_flag = PRECISION_FLOAT32
+            header%metadata_bytes = 0_int64
             return
         end if
 
@@ -186,9 +194,11 @@ contains
             call fail('Unsupported precision flag value: ' // trim(int_to_string(tmp_i32)))
         end select
 
-        if (file_size /= expected_total) then
+        if (file_size < expected_total) then
             call fail('File size does not match header metadata for declared precision')
         end if
+        extra_bytes = file_size - expected_total
+        header%metadata_bytes = extra_bytes
     end subroutine read_header
 
     subroutine allocate_host_arrays(header, host)
@@ -346,6 +356,90 @@ contains
         total = total + n_fe64 * n_obs64 * INT32_BYTES
         if (header%has_cluster) total = total + n_obs64 * INT32_BYTES
     end function compute_data_bytes
+
+    subroutine read_metadata(unit, header)
+        integer, intent(in) :: unit
+        type(fe_dataset_header), intent(inout) :: header
+        character(len=4) :: tag
+        integer :: ios
+        integer(int32) :: version
+
+        if (header%metadata_bytes <= 0_int64) return
+
+        read(unit, iostat=ios) tag
+        call ensure_io_success(ios, 'reading metadata tag')
+        if (tag /= 'META') then
+            call fail('Unexpected metadata marker in dataset file')
+        end if
+
+        read(unit, iostat=ios) version
+        call ensure_io_success(ios, 'reading metadata version')
+
+        select case (version)
+        case (1)
+            call read_text(unit, header%depvar_name)
+            call read_text_list(unit, header%regressor_names)
+            call read_text_list(unit, header%instrument_names)
+            call read_text_list(unit, header%fe_names)
+            call read_text(unit, header%cluster_name)
+            call read_text(unit, header%weight_name)
+        case default
+            call fail('Unsupported metadata version in dataset file')
+        end select
+    end subroutine read_metadata
+
+    subroutine read_text(unit, value)
+        integer, intent(in) :: unit
+        character(len=:), allocatable, intent(inout) :: value
+        integer(int32) :: n_chars
+        integer :: ios
+
+        read(unit, iostat=ios) n_chars
+        call ensure_io_success(ios, 'reading metadata string length')
+        if (n_chars < 0) then
+            call fail('Negative string length found in metadata block')
+        end if
+        if (allocated(value)) deallocate(value)
+        if (n_chars == 0) return
+
+        allocate(character(len=n_chars) :: value)
+        read(unit, iostat=ios) value
+        call ensure_io_success(ios, 'reading metadata string')
+    end subroutine read_text
+
+    subroutine read_text_list(unit, items)
+        integer, intent(in) :: unit
+        character(len=:), allocatable, intent(inout) :: items(:)
+        integer(int32) :: count
+        integer :: ios, i, max_len
+        type(text_entry), allocatable :: tmp(:)
+
+        read(unit, iostat=ios) count
+        call ensure_io_success(ios, 'reading metadata string count')
+        if (count < 0) call fail('Negative metadata string count')
+
+        if (allocated(items)) deallocate(items)
+        if (count == 0) then
+            return
+        end if
+
+        allocate(tmp(count))
+        max_len = 0
+        do i = 1, count
+            call read_text(unit, tmp(i)%value)
+            if (allocated(tmp(i)%value)) then
+                max_len = max(max_len, len(tmp(i)%value))
+            end if
+        end do
+        if (max_len <= 0) max_len = 1
+        allocate(character(len=max_len) :: items(count))
+        items = ''
+        do i = 1, count
+            if (allocated(tmp(i)%value)) then
+                items(i)(1:len(tmp(i)%value)) = tmp(i)%value
+            end if
+        end do
+    end subroutine read_text_list
 
     subroutine ensure_io_success(ios, context)
         integer, intent(in) :: ios
