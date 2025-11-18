@@ -12,6 +12,12 @@ module fe_config
         integer(int32), allocatable :: cluster_fe_dims(:)
         integer(int32), allocatable :: iv_regressors(:)
         integer(int32), allocatable :: iv_instrument_cols(:)
+        character(len=:), allocatable :: depvar_name
+        character(len=:), allocatable :: formula_spec
+        character(len=:), allocatable :: iv_regressor_names(:)
+        character(len=:), allocatable :: iv_instrument_names(:)
+        character(len=:), allocatable :: cluster_name_targets(:)
+        character(len=:), allocatable :: fe_name_targets(:)
     end type fe_runtime_config
 
     public :: init_default_config

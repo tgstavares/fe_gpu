@@ -1,7 +1,7 @@
 program fe_gpu_main
     use iso_fortran_env, only: int32, real64
     use fe_config, only: fe_runtime_config, init_default_config
-    use fe_cli, only: parse_cli_arguments
+    use fe_cli, only: parse_cli_arguments, apply_config_bindings
     use fe_logging, only: log_info, log_warn
     use fe_types, only: fe_dataset_header, fe_host_arrays
     use fe_data_io, only: load_dataset_from_file, release_host_arrays
@@ -52,6 +52,7 @@ program fe_gpu_main
         
         call system_clock(count=it0)
         call load_dataset_from_file(cfg%data_path, header, host)
+        call apply_config_bindings(cfg, header)
         call system_clock(count=it1)
         load_time = real(it1 - it0) / real(itrate)
         !call log_info('Dataset summary -> ' // header%summary())

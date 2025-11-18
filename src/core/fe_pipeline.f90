@@ -114,6 +114,11 @@ contains
                 allocate(character(len=len_trim(header%depvar_name)) :: result%depvar_name)
                 result%depvar_name = trim(header%depvar_name)
             end if
+        else if (allocated(cfg%depvar_name)) then
+            if (len_trim(cfg%depvar_name) > 0) then
+                allocate(character(len=len_trim(cfg%depvar_name)) :: result%depvar_name)
+                result%depvar_name = trim(cfg%depvar_name)
+            end if
         end if
         call initialize_cluster_dims(cfg%cluster_fe_dims, header%n_fe, result%cluster_fe_dims)
         call initialize_cluster_labels(header)
