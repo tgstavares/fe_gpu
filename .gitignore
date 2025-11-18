@@ -29,6 +29,7 @@ __pycache__/
 *.csv
 *.tsv
 *.h5
+*.dta
 
 # Logs and temp files
 *.log

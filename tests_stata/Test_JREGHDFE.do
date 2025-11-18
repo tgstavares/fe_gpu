@@ -30,10 +30,10 @@ capture quietly log using "REGS_01_stata.txt", text replace
 // *** 
 *ivregress 2sls ln_wage (hours=tenure) ttl_exp union, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
 
-*ivreghdfe      ln_wage (hours wks_work = tenure wks_ue) ttl_exp union, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
+ivreghdfe      ln_wage (hours wks_work = tenure wks_ue) ttl_exp union, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
 *ivreghdfe      ln_wage (hours = tenure) ttl_exp union, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
 *reghdfejl      ln_wage (hours = tenure) ttl_exp union, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
 *jlhdfe_alt     ln_wage (hours = tenure) ttl_exp union, absorb(idcode occ_code year) vce(cluster idcode occ_code year) method(cuda) threads(1) outprefix(fem_out) display
-ivreghdfe      ln_wage (hours = tenure) ttl_exp union, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
+*ivreghdfe      ln_wage (hours = tenure) ttl_exp union, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
 capture quietly log close
 capture set rmsg off
