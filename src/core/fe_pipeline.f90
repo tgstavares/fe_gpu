@@ -74,6 +74,7 @@ contains
         character(len=256) :: warn_buf
         integer(int32), allocatable :: idx_instruments(:), tmp_instr(:)
         logical :: use_iv
+        integer :: dof_fes_nested
 
         call system_clock(count_rate = itrate)
         call system_clock(count=it0)
@@ -118,6 +119,7 @@ contains
 
         result%tss_total = compute_tss(host%y, .true.)
         result%dof_fes = estimate_fe_dof(group_sizes)
+        dof_fes_nested = estimate_nested_fe_dof(result%cluster_fe_dims, group_sizes)
 
         call fe_gpu_dataset_upload(host, group_sizes, gpu_data)
         result%is_iv = .false.
@@ -474,7 +476,7 @@ contains
             logical, intent(in) :: verbose
             type(fe_device_buffer) :: d_beta, d_residual, d_scores, d_meat, d_cluster_temp
             real(real64) :: rss, sigma2, t_start, t_end, weight
-            integer :: kept, param_count, intercept_count
+            integer :: kept, intercept_count
             integer(int64) :: df
             integer(int64) :: bytes_obs, bytes_reg, bytes_cluster_ids
             integer :: n_clusters, min_cluster_size, min_single_cluster
@@ -492,6 +494,7 @@ contains
             character(len=64) :: subset_label
             type(fe_device_buffer) :: reg_matrix
             logical :: use_projected, used_gpu_ids
+            integer :: param_count_total, param_count_effective, dof_fes_effective, nested_adj
 
             kept = size(idx)
             if (allocated(result%se)) result%se = 0.0_real64
@@ -513,8 +516,8 @@ contains
                 size(result%beta))
             call fe_gpu_dot(d_residual, d_residual, gpu_data%n_obs, rss)
             intercept_count = 1
-            param_count = max(0, result%dof_model) + max(0, result%dof_fes) + intercept_count
-            df = max(1_int64, gpu_data%n_obs - int(param_count, int64))
+            param_count_total = max(0, result%dof_model) + max(0, result%dof_fes) + intercept_count
+            df = max(1_int64, gpu_data%n_obs - int(param_count_total, int64))
             result%dof_resid = df
             result%rss = rss
             sigma2 = rss / real(df, real64)
@@ -634,9 +637,6 @@ contains
                     meat_kept = meat_full(idx, idx)
                     cov_mat = matmul(Q_inv_kept, matmul(meat_kept, Q_inv_kept))
                     subset_weight = weight
-                    if (n_clusters > 1) then
-                        subset_weight = subset_weight * real(n_clusters, real64) / real(max(1, n_clusters - 1), real64)
-                    end if
                     cov_accum = cov_accum + subset_weight * cov_mat
                     deallocate(meat_full, meat_kept, cov_mat)
 
@@ -654,9 +654,16 @@ contains
                 end do
 
                 if (cluster_success) then
-                    scalar = 1.0_real64
-                    denom_adj = real(max(1_int64, gpu_data%n_obs - int(param_count, int64)), real64)
-                    scalar = scalar * real(max(1_int64, gpu_data%n_obs - 1_int64), real64) / denom_adj
+                    dof_fes_effective = result%dof_fes
+                    if (has_clusters) then
+                        dof_fes_effective = result%dof_fes - dof_fes_nested
+                    end if
+                    if (dof_fes_effective < 0) dof_fes_effective = 0
+                    nested_adj = 0
+                    if (has_clusters .and. dof_fes_nested > 0) nested_adj = 1
+                    param_count_effective = max(0, result%dof_model) + max(0, dof_fes_effective) + nested_adj
+                    denom_adj = real(max(1_int64, gpu_data%n_obs - int(param_count_effective, int64)), real64)
+                    scalar = real(max(1_int64, gpu_data%n_obs - 1_int64), real64) / denom_adj
                     if (min_single_cluster > 1) then
                         scalar = scalar * real(min_single_cluster, real64) / real(min_single_cluster - 1, real64)
                     end if
@@ -881,6 +888,21 @@ contains
             total = total + max(0, group_sizes(d) - 1)
         end do
     end function estimate_fe_dof
+
+    function estimate_nested_fe_dof(cluster_dims, group_sizes) result(total)
+        integer(int32), intent(in) :: cluster_dims(:)
+        integer, intent(in) :: group_sizes(:)
+        integer :: total
+        integer :: i, dim_index
+
+        total = 0
+        if (size(cluster_dims) == 0) return
+        do i = 1, size(cluster_dims)
+            dim_index = cluster_dims(i)
+            if (dim_index < 1 .or. dim_index > size(group_sizes)) cycle
+            total = total + max(0, group_sizes(dim_index) - 1)
+        end do
+    end function estimate_nested_fe_dof
 
     subroutine finalize_regression_stats(est, n_obs, has_fes)
         type(fe_estimation_result), intent(inout) :: est
