@@ -18,6 +18,9 @@ module fe_config
         character(len=:), allocatable :: iv_instrument_names(:)
         character(len=:), allocatable :: cluster_name_targets(:)
         character(len=:), allocatable :: fe_name_targets(:)
+        character(len=:), allocatable :: regressor_name_targets(:)
+        integer(int32), allocatable :: regressor_selection(:)
+        integer(int32), allocatable :: fe_selection(:)
     end type fe_runtime_config
 
     public :: init_default_config
@@ -36,6 +39,8 @@ contains
         allocate(cfg%cluster_fe_dims(0))
         allocate(cfg%iv_regressors(0))
         allocate(cfg%iv_instrument_cols(0))
+        allocate(cfg%regressor_selection(0))
+        allocate(cfg%fe_selection(0))
     end subroutine init_default_config
 
     function describe_config(cfg) result(message)

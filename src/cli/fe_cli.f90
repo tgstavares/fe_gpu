@@ -95,11 +95,14 @@ contains
     subroutine print_usage()
         write(error_unit, '(A)') 'Usage: fe_gpu [options]'
         write(error_unit, '(A)') '  -d, --data <path>        Path to binary dataset (default: data.bin)'
+        write(error_unit, '(A)') '      --config <file>      Load options (data path, formula, etc.) from config file'
         write(error_unit, '(A)') '      --fe-tol <float>     Convergence tolerance for FE solver (default: 1e-6)'
         write(error_unit, '(A)') '      --fe-max-iters <int> Maximum FE iterations (default: 500)'
         write(error_unit, '(A)') '      --cluster-fe <list>  Cluster SEs by FE dimensions (comma-separated list, 1-based)'
         write(error_unit, '(A)') '      --iv-cols <list>     Comma-separated regressor indices treated as endogenous'
         write(error_unit, '(A)') '      --iv-z-cols <list>   Comma-separated instrument column indices (default: all)'
+        write(error_unit, '(A)') '      --formula \"y ~ x1 x2 (x2 ~ z1 z2), fe(worker firm) cluster(worker)\"'
+        write(error_unit, '(A)') '                             Estimate regression with named columns (config only)'
         write(error_unit, '(A)') '      --cpu-only           Disable GPU acceleration'
         write(error_unit, '(A)') '      --gpu                Force GPU usage when available'
         write(error_unit, '(A)') '      --verbose            Enable verbose logging'
@@ -409,6 +412,7 @@ contains
         call clear_name_array(cfg%iv_instrument_names)
         call clear_name_array(cfg%cluster_name_targets)
         call clear_name_array(cfg%fe_name_targets)
+        call clear_name_array(cfg%regressor_name_targets)
 
         comma_pos = index(work, ',')
         if (comma_pos > 0) then
@@ -448,7 +452,7 @@ contains
         type(fe_runtime_config), intent(inout) :: cfg
         character(len=*), intent(in) :: rhs
         integer :: i, n, start, depth
-        character(len=:), allocatable :: block
+        character(len=:), allocatable :: block, token
 
         n = len_trim(rhs)
         i = 1
@@ -477,9 +481,12 @@ contains
                 call parse_iv_block(cfg, block)
                 i = i + 1
             else
+                start = i
                 do while (i <= n .and. rhs(i:i) /= ' ' .and. rhs(i:i) /= '(')
                     i = i + 1
                 end do
+                token = rhs(start:i - 1)
+                call append_name_unique(cfg%regressor_name_targets, trim(token))
             end if
         end do
     end subroutine parse_rhs_terms
@@ -641,6 +648,29 @@ contains
         call move_alloc(tmp, list)
     end subroutine append_name
 
+    subroutine append_name_unique(list, value)
+        character(len=:), allocatable, intent(inout) :: list(:)
+        character(len=*), intent(in) :: value
+        if (len_trim(value) == 0) return
+        if (contains_name(list, value)) return
+        call append_name(list, value)
+    end subroutine append_name_unique
+
+    logical function contains_name(list, value) result(found)
+        character(len=:), allocatable, intent(in) :: list(:)
+        character(len=*), intent(in) :: value
+        integer :: i
+        found = .false.
+        if (.not. allocated(list)) return
+        do i = 1, size(list)
+            if (len_trim(list(i)) == 0) cycle
+            if (to_lower(trim(list(i))) == to_lower(trim(value))) then
+                found = .true.
+                return
+            end if
+        end do
+    end function contains_name
+
     subroutine clear_name_array(list)
         character(len=:), allocatable, intent(inout) :: list(:)
         if (allocated(list)) deallocate(list)
@@ -698,6 +728,26 @@ contains
             end if
         end if
 
+        if (allocated(cfg%fe_name_targets) .and. size(cfg%fe_name_targets) > 0 .and. &
+            allocated(header%fe_names)) then
+            call map_name_list(cfg%fe_name_targets, header%fe_names, mapped)
+            if (allocated(mapped)) then
+                if (allocated(cfg%fe_selection)) deallocate(cfg%fe_selection)
+                allocate(cfg%fe_selection(size(mapped)))
+                cfg%fe_selection = mapped
+            end if
+        end if
+
+        if (allocated(cfg%regressor_name_targets) .and. size(cfg%regressor_name_targets) > 0 .and. &
+            allocated(header%regressor_names)) then
+            call map_name_list(cfg%regressor_name_targets, header%regressor_names, mapped)
+            if (allocated(mapped)) then
+                if (allocated(cfg%regressor_selection)) deallocate(cfg%regressor_selection)
+                allocate(cfg%regressor_selection(size(mapped)))
+                cfg%regressor_selection = mapped
+            end if
+        end if
+
         if (((.not. allocated(cfg%iv_regressors)) .or. size(cfg%iv_regressors) == 0) .and. &
             allocated(cfg%iv_regressor_names) .and. allocated(header%regressor_names)) then
             call map_name_list(cfg%iv_regressor_names, header%regressor_names, mapped)
@@ -708,6 +758,7 @@ contains
                 call sort_iv_columns(cfg)
             end if
         end if
+        call remap_iv_with_selection(cfg)
 
         if (((.not. allocated(cfg%iv_instrument_cols)) .or. size(cfg%iv_instrument_cols) == 0) .and. &
             allocated(cfg%iv_instrument_names) .and. allocated(header%instrument_names)) then
@@ -722,6 +773,51 @@ contains
 
         call sort_cluster_dimensions(cfg)
     end subroutine apply_config_bindings
+
+    subroutine remap_iv_with_selection(cfg)
+        type(fe_runtime_config), intent(inout) :: cfg
+        integer(int32), allocatable :: remapped(:)
+        integer :: i, pos, kept
+        if (.not. allocated(cfg%regressor_selection)) return
+        if (.not. allocated(cfg%iv_regressors)) return
+        if (size(cfg%regressor_selection) == 0 .or. size(cfg%iv_regressors) == 0) return
+
+        allocate(remapped(size(cfg%iv_regressors)))
+        kept = 0
+        do i = 1, size(cfg%iv_regressors)
+            pos = find_position(cfg%regressor_selection, cfg%iv_regressors(i))
+            if (pos > 0) then
+                kept = kept + 1
+                remapped(kept) = int(pos, int32)
+            else
+                call log_warn('Dropping IV regressor index not present in selected regressors.')
+            end if
+        end do
+        if (kept == 0) then
+            deallocate(cfg%iv_regressors)
+            allocate(cfg%iv_regressors(0))
+        else
+            if (kept < size(remapped)) then
+                cfg%iv_regressors = remapped(1:kept)
+            else
+                cfg%iv_regressors = remapped
+            end if
+        end if
+        deallocate(remapped)
+    end subroutine remap_iv_with_selection
+
+    integer function find_position(selection, value) result(pos)
+        integer(int32), intent(in) :: selection(:)
+        integer(int32), intent(in) :: value
+        integer :: i
+        pos = 0
+        do i = 1, size(selection)
+            if (selection(i) == value) then
+                pos = i
+                return
+            end if
+        end do
+    end function find_position
 
     subroutine map_name_list(requested, available, indices)
         character(len=*), intent(in) :: requested(:)

@@ -53,6 +53,8 @@ program fe_gpu_main
         call system_clock(count=it0)
         call load_dataset_from_file(cfg%data_path, header, host)
         call apply_config_bindings(cfg, header)
+        call apply_fe_filter(cfg, header, host)
+        call apply_regressor_filter(cfg, header, host)
         call system_clock(count=it1)
         load_time = real(it1 - it0) / real(itrate)
         !call log_info('Dataset summary -> ' // header%summary())
@@ -263,5 +265,168 @@ contains
         write(msg, '("fe_gpu runtime completed in ",F8.3," s.")') total_time
         msg = trim(msg)
     end function format_runtime_message
+
+    subroutine apply_regressor_filter(cfg, header, host)
+        type(fe_runtime_config), intent(inout) :: cfg
+        type(fe_dataset_header), intent(inout) :: header
+        type(fe_host_arrays), intent(inout) :: host
+        integer(int32), allocatable :: selection(:)
+        integer :: n_sel, j, n_obs, orig_k, idx, i
+        real(real64), allocatable :: newW(:, :)
+        character(len=:), allocatable :: new_names(:)
+        integer :: max_len
+
+        if (.not. allocated(cfg%regressor_selection)) return
+        if (size(cfg%regressor_selection) == 0) return
+
+        selection = cfg%regressor_selection
+        n_sel = size(selection)
+        orig_k = size(host%W, 2)
+        n_obs = size(host%W, 1)
+        if (n_sel <= 0 .or. orig_k <= 0) return
+
+        allocate(newW(n_obs, n_sel))
+        do j = 1, n_sel
+            idx = selection(j)
+            if (idx < 1 .or. idx > orig_k) then
+                call log_warn('Regressor selection index out of range; keeping original matrix.')
+                deallocate(newW)
+                return
+            end if
+            newW(:, j) = host%W(:, idx)
+        end do
+        call move_alloc(newW, host%W)
+        header%n_regressors = n_sel
+
+        if (allocated(header%regressor_names)) then
+            max_len = 0
+            do j = 1, n_sel
+                if (selection(j) >= 1 .and. selection(j) <= size(header%regressor_names)) then
+                    max_len = max(max_len, len_trim(header%regressor_names(selection(j))))
+                end if
+            end do
+            if (max_len <= 0) max_len = len(header%regressor_names(1))
+            allocate(character(len=max_len) :: new_names(n_sel))
+            new_names = ''
+            do j = 1, n_sel
+                if (selection(j) >= 1 .and. selection(j) <= size(header%regressor_names)) then
+                    new_names(j)(1:len_trim(header%regressor_names(selection(j)))) = &
+                        trim(header%regressor_names(selection(j)))
+                end if
+            end do
+            call move_alloc(new_names, header%regressor_names)
+        end if
+
+        if (allocated(cfg%regressor_selection)) then
+            cfg%regressor_selection = [(int(i, int32), i = 1, n_sel)]
+        end if
+    end subroutine apply_regressor_filter
+
+    subroutine apply_fe_filter(cfg, header, host)
+        type(fe_runtime_config), intent(inout) :: cfg
+        type(fe_dataset_header), intent(inout) :: header
+        type(fe_host_arrays), intent(inout) :: host
+        integer(int32), allocatable :: selection(:)
+        integer :: n_keep, j, n_obs, orig_fe, idx, k
+        integer, allocatable :: remap(:)
+        integer :: max_len
+        integer(int32), allocatable :: tmp_dims(:)
+        integer :: count
+        integer(int32), allocatable :: new_ids(:, :)
+
+        if (.not. allocated(cfg%fe_selection)) return
+        if (size(cfg%fe_selection) == 0) return
+
+        selection = cfg%fe_selection
+        n_keep = size(selection)
+        orig_fe = size(host%fe_ids, 1)
+        if (n_keep <= 0 .or. orig_fe <= 0) return
+
+        n_obs = size(host%fe_ids, 2)
+        allocate(remap(orig_fe))
+        remap = -1
+        do j = 1, n_keep
+            idx = selection(j)
+            if (idx < 1 .or. idx > orig_fe) then
+                call log_warn('FE selection index out of range; keeping original FE dimensions.')
+                deallocate(remap)
+                return
+            end if
+            remap(idx) = j
+        end do
+
+        allocate(new_ids(n_keep, size(host%fe_ids, 2)))
+        do j = 1, n_keep
+            idx = selection(j)
+            new_ids(j, :) = host%fe_ids(idx, :)
+        end do
+        deallocate(host%fe_ids)
+        allocate(host%fe_ids(n_keep, size(new_ids, 2)))
+        host%fe_ids = new_ids
+        deallocate(new_ids)
+        header%n_fe = n_keep
+
+        if (allocated(header%fe_names)) then
+            max_len = 0
+            do j = 1, n_keep
+                if (selection(j) >= 1 .and. selection(j) <= size(header%fe_names)) then
+                    max_len = max(max_len, len_trim(header%fe_names(selection(j))))
+                end if
+            end do
+            if (max_len <= 0) max_len = len(header%fe_names(1))
+            call resize_name_list(header%fe_names, selection, max_len)
+        end if
+
+        if (allocated(cfg%cluster_fe_dims)) then
+            allocate(tmp_dims(size(cfg%cluster_fe_dims)))
+            count = 0
+            do j = 1, size(cfg%cluster_fe_dims)
+                idx = cfg%cluster_fe_dims(j)
+                if (idx < 1 .or. idx > orig_fe) cycle
+                k = remap(idx)
+                if (k > 0) then
+                    count = count + 1
+                    tmp_dims(count) = k
+                end if
+            end do
+            if (count > 0) then
+                if (size(cfg%cluster_fe_dims) /= count) then
+                    deallocate(cfg%cluster_fe_dims)
+                    allocate(cfg%cluster_fe_dims(count))
+                end if
+                cfg%cluster_fe_dims(1:count) = tmp_dims(1:count)
+            else
+                deallocate(cfg%cluster_fe_dims)
+                allocate(cfg%cluster_fe_dims(0))
+            end if
+            deallocate(tmp_dims)
+        end if
+
+        if (allocated(cfg%fe_selection)) then
+            deallocate(cfg%fe_selection)
+            allocate(cfg%fe_selection(n_keep))
+            cfg%fe_selection = [(int(k, int32), k = 1, n_keep)]
+        end if
+
+        deallocate(remap)
+    end subroutine apply_fe_filter
+
+    subroutine resize_name_list(name_list, selection, max_len)
+        character(len=:), allocatable, intent(inout) :: name_list(:)
+        integer(int32), intent(in) :: selection(:)
+        integer, intent(in) :: max_len
+        character(len=:), allocatable :: new_list(:)
+        integer :: j, idx
+
+        allocate(character(len=max_len) :: new_list(size(selection)))
+        new_list = ''
+        do j = 1, size(selection)
+            idx = selection(j)
+            if (idx >= 1 .and. idx <= size(name_list)) then
+                new_list(j)(1:len_trim(name_list(idx))) = trim(name_list(idx))
+            end if
+        end do
+        call move_alloc(new_list, name_list)
+    end subroutine resize_name_list
 
 end program fe_gpu_main
