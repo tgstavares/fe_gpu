@@ -50,6 +50,8 @@ module fe_gpu_runtime
     public :: fe_gpu_check
     public :: fe_gpu_copy_columns
     public :: fe_gpu_build_multi_cluster_ids
+    public :: fe_gpu_last_error
+    public :: fe_gpu_clear_error
 
     interface
         function c_fe_gpu_runtime_is_available() bind(C, name="fe_gpu_runtime_is_available") result(flag)
@@ -120,6 +122,11 @@ module fe_gpu_runtime
             integer(c_size_t), value :: length
             integer(c_int) :: status
         end function c_fe_gpu_runtime_get_last_error
+
+        function c_fe_gpu_runtime_clear_error() bind(C, name="fe_gpu_runtime_clear_error") result(status)
+            import :: c_int
+            integer(c_int) :: status
+        end function c_fe_gpu_runtime_clear_error
 
         function c_fe_gpu_copy_columns(src, ld_src, indices, n_indices, n_rows, dst, ld_dst, dest_offset) &
                 bind(C, name="fe_gpu_copy_columns") result(status)
@@ -422,6 +429,11 @@ contains
         message = c_string_to_fortran(buffer)
         if (len(message) == 0) message = 'Unknown GPU backend error'
     end function fe_gpu_last_error
+
+    subroutine fe_gpu_clear_error()
+        integer(c_int) :: status
+        status = c_fe_gpu_runtime_clear_error()
+    end subroutine fe_gpu_clear_error
 
     subroutine fe_gpu_check(status, context)
         integer(c_int), intent(in) :: status

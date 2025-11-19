@@ -419,6 +419,11 @@ int fe_gpu_runtime_get_last_error(char* buffer, size_t length) {
     return 0;
 }
 
+int fe_gpu_runtime_clear_error() {
+    cudaGetLastError();
+    return store_success();
+}
+
 int fe_gpu_fe_accumulate(const double* y,
                          const double* W,
                          const double* Z,

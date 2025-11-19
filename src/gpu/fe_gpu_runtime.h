@@ -30,6 +30,7 @@ int fe_gpu_runtime_memcpy_dtoh(void* dst, const void* src, size_t bytes);
 int fe_gpu_runtime_memcpy_dtod(void* dst, const void* src, size_t bytes);
 int fe_gpu_runtime_memset(void* ptr, int value, size_t bytes);
 int fe_gpu_runtime_get_last_error(char* buffer, size_t length);
+int fe_gpu_runtime_clear_error(void);
 
 int fe_gpu_linalg_init(void);
 int fe_gpu_linalg_shutdown(void);

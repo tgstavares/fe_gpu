@@ -934,9 +934,9 @@ contains
         integer :: info_index, idx, n_obs, level_count, i, row
         logical :: is_endog
 
-        data = reshape([0.0_real64], [0, 0])
-        labels = ['']
-        endog_flags = [.false.]
+        if (allocated(data)) deallocate(data)
+        if (allocated(labels)) deallocate(labels)
+        if (allocated(endog_flags)) deallocate(endog_flags)
         info_index = find_variable_info(infos, term%name)
         if (info_index <= 0) return
         if (.not. infos(info_index)%valid) return

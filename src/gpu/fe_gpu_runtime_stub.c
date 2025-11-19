@@ -84,6 +84,10 @@ int fe_gpu_runtime_get_last_error(char* buffer, size_t length) {
     return 0;
 }
 
+int fe_gpu_runtime_clear_error(void) {
+    return set_stub_error();
+}
+
 int fe_gpu_residual(int n_rows,
                     int n_cols,
                     const double* W,

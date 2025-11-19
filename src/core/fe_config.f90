@@ -32,6 +32,7 @@ module fe_config
         integer(int32), allocatable :: regressor_selection(:)
         integer(int32), allocatable :: fe_selection(:)
         logical :: use_formula_design = .false.
+        logical :: formula_has_categorical = .false.
         type(fe_formula_term), allocatable :: formula_terms(:)
         type(fe_formula_interaction), allocatable :: formula_interactions(:)
     end type fe_runtime_config
@@ -58,6 +59,7 @@ contains
         allocate(cfg%formula_terms(0))
         allocate(cfg%formula_interactions(0))
         cfg%use_formula_design = .false.
+        cfg%formula_has_categorical = .false.
     end subroutine init_default_config
 
     function describe_config(cfg) result(message)

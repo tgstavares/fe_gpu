@@ -387,7 +387,8 @@ contains
         character(len=*), intent(inout) :: text
         integer :: i, n
         logical :: in_single, in_double
-        character(len=1) :: ch
+        character(len=1) :: ch, prev
+        logical :: treat_as_comment
 
         n = len_trim(text)
         in_single = .false.
@@ -399,12 +400,21 @@ contains
             else if (ch == '''' .and. .not. in_double) then
                 in_single = .not. in_single
             else if (ch == '#' .and. .not. in_single .and. .not. in_double) then
-                if (i > 1) then
-                    text = text(:i - 1)
+                treat_as_comment = .false.
+                if (i == 1) then
+                    treat_as_comment = .true.
                 else
-                    text = ''
+                    prev = text(i - 1:i - 1)
+                    if (prev == ' ' .or. prev == char(9)) treat_as_comment = .true.
                 end if
-                exit
+                if (treat_as_comment) then
+                    if (i > 1) then
+                        text = text(:i - 1)
+                    else
+                        text = ''
+                    end if
+                    exit
+                end if
             end if
         end do
     end subroutine strip_inline_comment
@@ -601,12 +611,13 @@ contains
             subset_size = popcnt(mask)
             allocate(subset(subset_size))
             idx = 0
-            do j = 1, n
-                if (iand(mask, ishft(1, j - 1)) /= 0) then
-                    idx = idx + 1
-                    subset(idx) = parse_factor_from_token(trim(parts(j)))
-                end if
-            end do
+        do j = 1, n
+            if (iand(mask, ishft(1, j - 1)) /= 0) then
+                idx = idx + 1
+                subset(idx) = parse_factor_from_token(trim(parts(j)))
+                if (subset(idx)%is_categorical) cfg%formula_has_categorical = .true.
+            end if
+        end do
             if (subset_size == 1) then
                 call add_formula_main_term(cfg, subset(1))
             else
@@ -632,6 +643,7 @@ contains
         allocate(factors(n))
         do j = 1, n
             factors(j) = parse_factor_from_token(trim(parts(j)))
+            if (factors(j)%is_categorical) cfg%formula_has_categorical = .true.
         end do
         call add_formula_interaction(cfg, factors)
         deallocate(factors)
@@ -665,6 +677,7 @@ contains
         type(fe_formula_term), allocatable :: tmp(:)
         integer :: i, old_size
         if (len_trim(term%name) == 0) return
+        if (term%is_categorical) cfg%formula_has_categorical = .true.
         if (.not. allocated(cfg%formula_terms)) then
             allocate(cfg%formula_terms(0))
         end if
