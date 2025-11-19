@@ -8,7 +8,7 @@ webuse nlswork, clear
 keep ln_wage ttl_exp union idcode year occ_code hours tenure wks_work wks_ue ind_code msp
 save nlsw_test, replace
 
-local i=1
+local i=10
 foreach nn of numlist 1/`i' {
 	di "Iter: `nn'"
 	append using nlsw_test
@@ -27,7 +27,7 @@ capture quietly log using "REGS_01_stata.txt", text replace
 *reghdfe   ln_wage  hours                           ttl_exp union, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
 *ivreghdfe ln_wage (hours          = tenure)        ttl_exp union, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
 *ivreghdfe ln_wage (hours wks_work = tenure wks_ue) ttl_exp union, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
-reghdfe ln_wage hours wks_work ttl_exp union c.ttl_exp#c.union i.ind_code##i.msp, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
+*reghdfe ln_wage hours wks_work ttl_exp union c.ttl_exp#c.union i.ind_code##i.msp, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
 
 capture quietly log close
 capture set rmsg off

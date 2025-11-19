@@ -662,10 +662,12 @@ contains
             type(fe_device_buffer) :: reg_matrix
             logical :: use_projected, used_gpu_ids, disable_gpu_cluster_builder
             integer :: param_count_total, param_count_effective, dof_fes_effective, nested_adj
+            integer :: cpu_cluster_fallbacks
 
             kept = size(idx)
             if (allocated(result%se)) result%se = 0.0_real64
             disable_gpu_cluster_builder = .not. allow_gpu_cluster_builder
+            cpu_cluster_fallbacks = 0
 
             call cpu_time(t_start)
 
@@ -748,52 +750,54 @@ contains
                         min_single_cluster = min(min_single_cluster, n_clusters)
                         ids_buffer = gpu_data%fe_dims(dim_index)%fe_ids
                     else
-subset_retry:                 do
-                            used_gpu_ids = .false.
-                            if ((.not. result%is_iv) .and. (.not. disable_gpu_cluster_builder)) then
-                                call build_gpu_cluster_ids_helper(gpu_data, subset_dims, group_sizes, d_cluster_temp, &
-                                    n_clusters, status_build)
-                                if (status_build == 0 .and. n_clusters > 0) then
-                                    min_cluster_size = min(min_cluster_size, n_clusters)
-                                    ids_buffer = d_cluster_temp
-                                    used_gpu_ids = .true.
-                                else
-                                    if (status_build /= 0) disable_gpu_cluster_builder = .true.
+                        used_gpu_ids = .false.
+                        if ((.not. result%is_iv) .and. (.not. disable_gpu_cluster_builder)) then
+                            call build_gpu_cluster_ids_helper(gpu_data, subset_dims, group_sizes, d_cluster_temp, &
+                                n_clusters, status_build)
+                            if (status_build == 0 .and. n_clusters > 0) then
+                                min_cluster_size = min(min_cluster_size, n_clusters)
+                                ids_buffer = d_cluster_temp
+                                used_gpu_ids = .true.
+                            else
+                                disable_gpu_cluster_builder = .true.
+                                if (status_build /= 0) then
                                     if (verbose) then
                                         write(warn_msg, '("GPU cluster-id builder failed for subset ",A," (status=",I0,"): ",A)') &
                                             trim(subset_label), status_build, trim(fe_gpu_last_error())
                                         call log_warn(trim(warn_msg))
                                     end if
                                     call fe_gpu_clear_error()
-                                    cycle subset_retry
                                 end if
                             end if
+                        end if
 
-                            if (.not. used_gpu_ids) then
-                                if (.not. c_associated(d_cluster_temp%ptr)) then
-                                    call fe_device_alloc(d_cluster_temp, bytes_cluster_ids)
-                                end if
-                                if (.not. allocated(combo_ids)) allocate(combo_ids(int(gpu_data%n_obs)))
-                                call build_cluster_ids(host%fe_ids, group_sizes, subset_dims, combo_ids, n_clusters, status_build)
-                                if (status_build /= 0) then
-                                    call log_warn('Unable to build cluster identifiers for requested subset; skipping cluster SEs.')
-                                    cluster_success = .false.
-                                    deallocate(subset_dims)
-                                    exit subset_retry
-                                end if
-                                if (n_clusters <= 0) then
-                                    call log_warn('Cluster subset produced zero groups; skipping cluster SEs.')
-                                    cluster_success = .false.
-                                    deallocate(subset_dims)
-                                    exit subset_retry
-                                end if
-                                min_cluster_size = min(min_cluster_size, n_clusters)
-                                call fe_memcpy_htod(d_cluster_temp, c_loc(combo_ids(1)), bytes_cluster_ids)
-                                ids_buffer = d_cluster_temp
+                        if (.not. used_gpu_ids) then
+                            cpu_cluster_fallbacks = cpu_cluster_fallbacks + 1
+                            if (verbose) then
+                                write(warn_msg, '("GPU builder fallback to CPU for subset ",A)') trim(subset_label)
+                                call log_info(trim(warn_msg))
                             end if
-
-                            exit subset_retry
-                        end do subset_retry
+                            if (.not. c_associated(d_cluster_temp%ptr)) then
+                                call fe_device_alloc(d_cluster_temp, bytes_cluster_ids)
+                            end if
+                            if (.not. allocated(combo_ids)) allocate(combo_ids(int(gpu_data%n_obs)))
+                            call build_cluster_ids(host%fe_ids, group_sizes, subset_dims, combo_ids, n_clusters, status_build)
+                            if (status_build /= 0) then
+                                call log_warn('Unable to build cluster identifiers for requested subset; skipping cluster SEs.')
+                                cluster_success = .false.
+                                deallocate(subset_dims)
+                                exit
+                            end if
+                            if (n_clusters <= 0) then
+                                call log_warn('Cluster subset produced zero groups; skipping cluster SEs.')
+                                cluster_success = .false.
+                                deallocate(subset_dims)
+                                exit
+                            end if
+                            min_cluster_size = min(min_cluster_size, n_clusters)
+                            call fe_memcpy_htod(d_cluster_temp, c_loc(combo_ids(1)), bytes_cluster_ids)
+                            ids_buffer = d_cluster_temp
+                        end if
                     end if
                     call cpu_time(subset_mid)
 
@@ -866,6 +870,12 @@ subset_retry:                 do
                 if (allocated(cov_accum)) deallocate(cov_accum)
                 if (c_associated(d_cluster_temp%ptr)) call fe_device_free(d_cluster_temp)
                 if (allocated(combo_ids)) deallocate(combo_ids)
+            end if
+
+            if (cpu_cluster_fallbacks > 0 .and. verbose) then
+                write(warn_msg, '("Cluster ID GPU builder unavailable for ",I0," subset(s); CPU fallback used.")') &
+                    cpu_cluster_fallbacks
+                call log_info(trim(warn_msg))
             end if
 
             call fe_device_free(d_beta)

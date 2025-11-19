@@ -4,6 +4,10 @@
 #include <cub/cub.cuh>
 
 #include <algorithm>
+#include <thrust/device_ptr.h>
+#include <thrust/sort.h>
+#include <thrust/execution_policy.h>
+#include <vector>
 #include <cstdio>
 #include <cstring>
 
@@ -252,32 +256,51 @@ __global__ void init_sequence_kernel(int* data, long long n) {
     }
 }
 
-__global__ void build_keys_kernel(const int* const* fe_ptrs,
-                                  int n_dims,
-                                  long long n_obs,
-                                  const unsigned long long* strides,
-                                  unsigned long long* keys) {
-    long long idx = static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;
-    long long stride = static_cast<long long>(blockDim.x) * gridDim.x;
-    while (idx < n_obs) {
-        unsigned long long key = 0ULL;
-        for (int d = 0; d < n_dims; ++d) {
-            int value = fe_ptrs[d][idx];
-            key += (static_cast<unsigned long long>(value - 1) * strides[d]);
-        }
-        keys[idx] = key;
-        idx += stride;
-    }
-}
+struct fe_order_comparator {
+    const int* const* fe_ptrs;
+    int n_dims;
 
-__global__ void compute_flags_kernel(const unsigned long long* keys, int* flags, long long n) {
+    __host__ __device__
+    fe_order_comparator(const int* const* ptrs = nullptr, int dims = 0) : fe_ptrs(ptrs), n_dims(dims) {}
+
+    __host__ __device__ bool operator()(const int lhs, const int rhs) const {
+#ifdef __CUDA_ARCH__
+        for (int d = 0; d < n_dims; ++d) {
+            int lhs_val = fe_ptrs[d][lhs];
+            int rhs_val = fe_ptrs[d][rhs];
+            if (lhs_val < rhs_val) return true;
+            if (lhs_val > rhs_val) return false;
+        }
+        return false;
+#else
+        return false;
+#endif
+    }
+};
+
+__global__ void compute_flags_from_order_kernel(const int* order,
+                                                const int* const* fe_ptrs,
+                                                int n_dims,
+                                                long long n,
+                                                int* flags) {
     long long idx = static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;
     long long stride = static_cast<long long>(blockDim.x) * gridDim.x;
     while (idx < n) {
         if (idx == 0) {
             flags[idx] = 1;
         } else {
-            flags[idx] = (keys[idx] != keys[idx - 1]) ? 1 : 0;
+            int current = order[idx];
+            int prev = order[idx - 1];
+            int diff = 0;
+            for (int d = 0; d < n_dims; ++d) {
+                int val_curr = fe_ptrs[d][current];
+                int val_prev = fe_ptrs[d][prev];
+                if (val_curr != val_prev) {
+                    diff = 1;
+                    break;
+                }
+            }
+            flags[idx] = diff;
         }
         idx += stride;
     }
@@ -509,6 +532,7 @@ int fe_gpu_build_multi_cluster_ids(const void* const* fe_ptrs_host,
                                    long long n_obs,
                                    int* out_ids,
                                    int* out_n_clusters) {
+    (void)strides_host;
     if (!fe_ptrs_host || !strides_host || !out_ids || !out_n_clusters || n_dims <= 0) {
         return store_custom_error("Invalid arguments to GPU cluster builder");
     }
@@ -523,28 +547,19 @@ int fe_gpu_build_multi_cluster_ids(const void* const* fe_ptrs_host,
     blocks = std::min(blocks, 65535);
 
     const int** d_ptrs = nullptr;
-    unsigned long long* d_strides = nullptr;
-    unsigned long long* d_keys_in = nullptr;
-    unsigned long long* d_keys_out = nullptr;
     int* d_order_in = nullptr;
     int* d_order_out = nullptr;
     int* d_flags = nullptr;
     int* d_cluster_sorted = nullptr;
-    void* temp_sort = nullptr;
     void* temp_scan = nullptr;
-    size_t temp_sort_bytes = 0;
     size_t temp_scan_bytes = 0;
     cudaError_t err;
     auto cleanup = [&]() {
         if (d_ptrs) cudaFree(d_ptrs);
-        if (d_strides) cudaFree(d_strides);
-        if (d_keys_in) cudaFree(d_keys_in);
-        if (d_keys_out) cudaFree(d_keys_out);
         if (d_order_in) cudaFree(d_order_in);
         if (d_order_out) cudaFree(d_order_out);
         if (d_flags) cudaFree(d_flags);
         if (d_cluster_sorted) cudaFree(d_cluster_sorted);
-        if (temp_sort) cudaFree(temp_sort);
         if (temp_scan) cudaFree(temp_scan);
     };
 
@@ -559,28 +574,6 @@ int fe_gpu_build_multi_cluster_ids(const void* const* fe_ptrs_host,
         return store_cuda_error(err, "cudaMemcpy cluster ptrs");
     }
 
-    err = cudaMalloc(&d_strides, sizeof(unsigned long long) * static_cast<size_t>(n_dims));
-    if (err != cudaSuccess) {
-        cleanup();
-        return store_cuda_error(err, "cudaMalloc strides");
-    }
-    err = cudaMemcpy(d_strides, strides_host, sizeof(unsigned long long) * static_cast<size_t>(n_dims),
-                     cudaMemcpyHostToDevice);
-    if (err != cudaSuccess) {
-        cleanup();
-        return store_cuda_error(err, "cudaMemcpy strides");
-    }
-
-    err = cudaMalloc(&d_keys_in, sizeof(unsigned long long) * n);
-    if (err != cudaSuccess) {
-        cleanup();
-        return store_cuda_error(err, "cudaMalloc keys");
-    }
-    err = cudaMalloc(&d_keys_out, sizeof(unsigned long long) * n);
-    if (err != cudaSuccess) {
-        cleanup();
-        return store_cuda_error(err, "cudaMalloc keys buffer");
-    }
     err = cudaMalloc(&d_order_in, sizeof(int) * n);
     if (err != cudaSuccess) {
         cleanup();
@@ -614,27 +607,26 @@ int fe_gpu_build_multi_cluster_ids(const void* const* fe_ptrs_host,
         return store_cuda_error(err, "init_sequence sync");
     }
 
-    build_keys_kernel<<<blocks, threads>>>(d_ptrs, n_dims, n_obs, d_strides, d_keys_in);
+    int num_items = static_cast<int>(n);
+    thrust::device_ptr<int> order_begin(d_order_in);
+    thrust::sort(thrust::device, order_begin, order_begin + n, fe_order_comparator(d_ptrs, n_dims));
     err = cudaGetLastError();
     if (err != cudaSuccess) {
         cleanup();
-        return store_cuda_error(err, "build_keys kernel");
+        return store_cuda_error(err, "thrust::sort");
     }
     err = cudaDeviceSynchronize();
     if (err != cudaSuccess) {
         cleanup();
-        return store_cuda_error(err, "build_keys sync");
+        return store_cuda_error(err, "thrust sort sync");
     }
-
-    cub::DeviceRadixSort::SortPairs(nullptr, temp_sort_bytes, d_keys_in, d_keys_out, d_order_in, d_order_out, n);
-    err = cudaMalloc(&temp_sort, temp_sort_bytes);
+    err = cudaMemcpy(d_order_out, d_order_in, sizeof(int) * n, cudaMemcpyDeviceToDevice);
     if (err != cudaSuccess) {
         cleanup();
-        return store_cuda_error(err, "cudaMalloc sort temp");
+        return store_cuda_error(err, "cudaMemcpy sorted order");
     }
-    cub::DeviceRadixSort::SortPairs(temp_sort, temp_sort_bytes, d_keys_in, d_keys_out, d_order_in, d_order_out, n);
 
-    compute_flags_kernel<<<blocks, threads>>>(d_keys_out, d_flags, n_obs);
+    compute_flags_from_order_kernel<<<blocks, threads>>>(d_order_out, d_ptrs, n_dims, n_obs, d_flags);
     err = cudaGetLastError();
     if (err != cudaSuccess) {
         cleanup();
@@ -646,18 +638,39 @@ int fe_gpu_build_multi_cluster_ids(const void* const* fe_ptrs_host,
         return store_cuda_error(err, "flags sync");
     }
 
-    cub::DeviceScan::InclusiveSum(nullptr, temp_scan_bytes, d_flags, d_cluster_sorted, n);
+    thrust::device_ptr<int> flags_ptr(d_flags);
+    int cluster_count = thrust::reduce(thrust::device, flags_ptr, flags_ptr + n_obs);
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        cleanup();
+        return store_cuda_error(err, "thrust::reduce");
+    }
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        cleanup();
+        return store_cuda_error(err, "thrust reduce sync");
+    }
+
+    err = cub::DeviceScan::InclusiveSum(nullptr, temp_scan_bytes, d_flags, d_cluster_sorted, num_items);
+    if (err != cudaSuccess) {
+        cleanup();
+        return store_cuda_error(err, "cub::InclusiveSum temp");
+    }
     err = cudaMalloc(&temp_scan, temp_scan_bytes);
     if (err != cudaSuccess) {
         cleanup();
         return store_cuda_error(err, "cudaMalloc scan temp");
     }
-    cub::DeviceScan::InclusiveSum(temp_scan, temp_scan_bytes, d_flags, d_cluster_sorted, n);
-
-    err = cudaMemcpy(out_n_clusters, d_cluster_sorted + (n - 1), sizeof(int), cudaMemcpyDeviceToHost);
+    err = cub::DeviceScan::InclusiveSum(temp_scan, temp_scan_bytes, d_flags, d_cluster_sorted, num_items);
     if (err != cudaSuccess) {
         cleanup();
-        return store_cuda_error(err, "cudaMemcpy cluster count");
+        return store_cuda_error(err, "cub::InclusiveSum run");
+    }
+
+    *out_n_clusters = cluster_count;
+    if (*out_n_clusters == 0 && n > 0) {
+        cleanup();
+        return store_custom_error("GPU cluster builder produced zero clusters");
     }
 
     scatter_ids_kernel<<<blocks, threads>>>(d_order_out, d_cluster_sorted, out_ids, n_obs);
