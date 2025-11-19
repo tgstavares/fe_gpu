@@ -1,6 +1,6 @@
 module fe_cli
     use iso_fortran_env, only: error_unit, int32
-    use fe_config, only: fe_runtime_config, describe_config
+    use fe_config, only: fe_runtime_config, describe_config, fe_formula_term, fe_formula_interaction
     use fe_types, only: fe_dataset_header
     use fe_logging, only: log_info, log_warn
     implicit none
@@ -373,6 +373,8 @@ contains
                 cfg%verbose = parse_logical(value)
             case ('formula')
                 call parse_formula_string(cfg, value)
+            case ('fe_names')
+                call store_name_list(cfg%fe_override_names, normalize_list_text(value))
             case default
                 call log_warn('Ignoring unrecognized config key: ' // trim(key))
             end select
@@ -383,9 +385,28 @@ contains
 
     subroutine strip_inline_comment(text)
         character(len=*), intent(inout) :: text
-        integer :: pos
-        pos = index(text, '#')
-        if (pos > 0) text = text(:pos - 1)
+        integer :: i, n
+        logical :: in_single, in_double
+        character(len=1) :: ch
+
+        n = len_trim(text)
+        in_single = .false.
+        in_double = .false.
+        do i = 1, n
+            ch = text(i:i)
+            if (ch == '"' .and. .not. in_single) then
+                in_double = .not. in_double
+            else if (ch == '''' .and. .not. in_double) then
+                in_single = .not. in_single
+            else if (ch == '#' .and. .not. in_single .and. .not. in_double) then
+                if (i > 1) then
+                    text = text(:i - 1)
+                else
+                    text = ''
+                end if
+                exit
+            end if
+        end do
     end subroutine strip_inline_comment
 
     logical function parse_logical(raw) result(val)
@@ -413,6 +434,11 @@ contains
         call clear_name_array(cfg%cluster_name_targets)
         call clear_name_array(cfg%fe_name_targets)
         call clear_name_array(cfg%regressor_name_targets)
+        if (allocated(cfg%formula_terms)) deallocate(cfg%formula_terms)
+        allocate(cfg%formula_terms(0))
+        if (allocated(cfg%formula_interactions)) deallocate(cfg%formula_interactions)
+        allocate(cfg%formula_interactions(0))
+        cfg%use_formula_design = .false.
 
         comma_pos = index(work, ',')
         if (comma_pos > 0) then
@@ -436,7 +462,12 @@ contains
         if (len_trim(tail) > 0) then
             call parse_formula_options(cfg, tail)
         end if
-        cfg%formula_spec = work
+        if (size(cfg%formula_terms) > 0 .or. size(cfg%formula_interactions) > 0) then
+            cfg%use_formula_design = .true.
+            cfg%formula_spec = work
+        else
+            cfg%formula_spec = ''
+        end if
     end subroutine parse_formula_string
 
     subroutine set_scalar_name(target, source)
@@ -485,8 +516,9 @@ contains
                 do while (i <= n .and. rhs(i:i) /= ' ' .and. rhs(i:i) /= '(')
                     i = i + 1
                 end do
-                token = rhs(start:i - 1)
-                call append_name_unique(cfg%regressor_name_targets, trim(token))
+                token = trim(rhs(start:i - 1))
+                if (.not. token_has_factor_notation(token)) call append_name_unique(cfg%regressor_name_targets, token)
+                call process_formula_token(cfg, token)
             end if
         end do
     end subroutine parse_rhs_terms
@@ -542,6 +574,189 @@ contains
         end if
     end subroutine parse_formula_options
 
+    subroutine process_formula_token(cfg, token)
+        type(fe_runtime_config), intent(inout) :: cfg
+        character(len=*), intent(in) :: token
+        if (len_trim(token) == 0) return
+        if (index(token, '##') > 0) then
+            call handle_double_hash(cfg, trim(token))
+        else if (index(token, '#') > 0) then
+            call handle_interaction_token(cfg, trim(token))
+        else
+            call add_main_factor_token(cfg, trim(token))
+        end if
+    end subroutine process_formula_token
+
+    subroutine handle_double_hash(cfg, token)
+        type(fe_runtime_config), intent(inout) :: cfg
+        character(len=*), intent(in) :: token
+        character(len=:), allocatable :: parts(:)
+        type(fe_formula_term), allocatable :: subset(:)
+        integer :: n, mask, subset_size, idx, j
+
+        call split_token_by(token, '##', parts)
+        n = size(parts)
+        if (n <= 0) return
+        do mask = 1, ishft(1, n) - 1
+            subset_size = popcnt(mask)
+            allocate(subset(subset_size))
+            idx = 0
+            do j = 1, n
+                if (iand(mask, ishft(1, j - 1)) /= 0) then
+                    idx = idx + 1
+                    subset(idx) = parse_factor_from_token(trim(parts(j)))
+                end if
+            end do
+            if (subset_size == 1) then
+                call add_formula_main_term(cfg, subset(1))
+            else
+                call add_formula_interaction(cfg, subset)
+            end if
+            deallocate(subset)
+        end do
+    end subroutine handle_double_hash
+
+    subroutine handle_interaction_token(cfg, token)
+        type(fe_runtime_config), intent(inout) :: cfg
+        character(len=*), intent(in) :: token
+        character(len=:), allocatable :: parts(:)
+        type(fe_formula_term), allocatable :: factors(:)
+        integer :: n, j
+
+        call split_token_by(token, '#', parts)
+        n = size(parts)
+        if (n <= 1) then
+            if (n == 1) call add_main_factor_token(cfg, trim(parts(1)))
+            return
+        end if
+        allocate(factors(n))
+        do j = 1, n
+            factors(j) = parse_factor_from_token(trim(parts(j)))
+        end do
+        call add_formula_interaction(cfg, factors)
+        deallocate(factors)
+    end subroutine handle_interaction_token
+
+    subroutine add_main_factor_token(cfg, token)
+        type(fe_runtime_config), intent(inout) :: cfg
+        character(len=*), intent(in) :: token
+        type(fe_formula_term) :: term
+        term = parse_factor_from_token(trim(token))
+        call add_formula_main_term(cfg, term)
+    end subroutine add_main_factor_token
+
+    function parse_factor_from_token(text) result(term)
+        character(len=*), intent(in) :: text
+        type(fe_formula_term) :: term
+        character(len=:), allocatable :: lowered
+        lowered = trim(text)
+        if (len(lowered) >= 2 .and. lowered(1:2) == 'i.') then
+            term%is_categorical = .true.
+            term%name = trim(lowered(3:))
+        else
+            term%is_categorical = .false.
+            term%name = lowered
+        end if
+    end function parse_factor_from_token
+
+    subroutine add_formula_main_term(cfg, term)
+        type(fe_runtime_config), intent(inout) :: cfg
+        type(fe_formula_term), intent(in) :: term
+        type(fe_formula_term), allocatable :: tmp(:)
+        integer :: i, old_size
+        if (len_trim(term%name) == 0) return
+        if (.not. allocated(cfg%formula_terms)) then
+            allocate(cfg%formula_terms(0))
+        end if
+        do i = 1, size(cfg%formula_terms)
+            if (terms_equal(cfg%formula_terms(i), term)) return
+        end do
+        old_size = size(cfg%formula_terms)
+        allocate(tmp(old_size + 1))
+        if (old_size > 0) tmp(1:old_size) = cfg%formula_terms
+        tmp(old_size + 1) = term
+        call move_alloc(tmp, cfg%formula_terms)
+    end subroutine add_formula_main_term
+
+    subroutine add_formula_interaction(cfg, factors)
+        type(fe_runtime_config), intent(inout) :: cfg
+        type(fe_formula_term), intent(in) :: factors(:)
+        type(fe_formula_interaction), allocatable :: tmp(:)
+        integer :: i, old_size
+        if (size(factors) <= 1) return
+        if (.not. allocated(cfg%formula_interactions)) then
+            allocate(cfg%formula_interactions(0))
+        end if
+        do i = 1, size(cfg%formula_interactions)
+            if (interactions_equal(cfg%formula_interactions(i), factors)) return
+        end do
+        old_size = size(cfg%formula_interactions)
+        allocate(tmp(old_size + 1))
+        if (old_size > 0) tmp(1:old_size) = cfg%formula_interactions
+        allocate(tmp(old_size + 1)%factors(size(factors)))
+        tmp(old_size + 1)%factors = factors
+        call move_alloc(tmp, cfg%formula_interactions)
+    end subroutine add_formula_interaction
+
+    logical function terms_equal(a, b) result(equal)
+        type(fe_formula_term), intent(in) :: a, b
+        equal = (a%is_categorical .eqv. b%is_categorical) .and. &
+            (to_lower(trim(a%name)) == to_lower(trim(b%name)))
+    end function terms_equal
+
+    logical function interactions_equal(interaction, factors) result(equal)
+        type(fe_formula_interaction), intent(in) :: interaction
+        type(fe_formula_term), intent(in) :: factors(:)
+        integer :: i
+
+        equal = .false.
+        if (.not. allocated(interaction%factors)) return
+        if (size(interaction%factors) /= size(factors)) return
+        do i = 1, size(factors)
+            if (.not. terms_equal(interaction%factors(i), factors(i))) return
+        end do
+        equal = .true.
+    end function interactions_equal
+
+    subroutine split_token_by(text, sep, tokens)
+        character(len=*), intent(in) :: text
+        character(len=*), intent(in) :: sep
+        character(len=:), allocatable, intent(out) :: tokens(:)
+        character(len=:), allocatable :: temp(:)
+        integer :: start, pos, len_sep, n
+
+        len_sep = len(sep)
+        n = len_trim(text)
+        start = 1
+        allocate(character(len=1) :: temp(0))
+        do while (start <= n)
+            pos = index(text(start:), sep)
+            if (pos == 0) then
+                call append_name(temp, trim(text(start:)))
+                exit
+            else
+                call append_name(temp, trim(text(start:start + pos - 2)))
+                start = start + pos - 1 + len_sep
+                if (start > n) exit
+            end if
+        end do
+        call move_alloc(temp, tokens)
+    end subroutine split_token_by
+
+    logical function token_has_factor_notation(token) result(flag)
+        character(len=*), intent(in) :: token
+        character(len=:), allocatable :: work
+        work = trim(token)
+        flag = .false.
+        if (len(work) >= 2) then
+            if (work(1:2) == 'i.') then
+                flag = .true.
+                return
+            end if
+        end if
+        if (index(work, '#') > 0) flag = .true.
+    end function token_has_factor_notation
+
     subroutine extract_parenthesized(text, start_pos, block)
         character(len=*), intent(in) :: text
         integer, intent(in) :: start_pos
@@ -578,6 +793,17 @@ contains
         end do
         if (allocated(tokens)) deallocate(tokens)
     end subroutine store_name_list
+
+    function normalize_list_text(text) result(out)
+        character(len=*), intent(in) :: text
+        character(len=len(text)) :: out
+        integer :: i
+
+        out = text
+        do i = 1, len(out)
+            if (out(i:i) == ',') out(i:i) = ' '
+        end do
+    end function normalize_list_text
 
     subroutine split_whitespace(text, tokens)
         character(len=*), intent(in) :: text
@@ -656,6 +882,32 @@ contains
         call append_name(list, value)
     end subroutine append_name_unique
 
+    subroutine copy_name_array(source, target)
+        character(len=*), intent(in) :: source(:)
+        character(len=:), allocatable, intent(inout) :: target(:)
+        character(len=:), allocatable :: tmp(:)
+        integer :: max_len, i
+
+        if (size(source) == 0) then
+            if (allocated(target)) deallocate(target)
+            allocate(character(len=1) :: target(0))
+            return
+        end if
+
+        max_len = 0
+        do i = 1, size(source)
+            max_len = max(max_len, len_trim(source(i)))
+        end do
+        if (max_len <= 0) max_len = 1
+        allocate(character(len=max_len) :: tmp(size(source)))
+        tmp = ''
+        do i = 1, size(source)
+            call assign_string(tmp(i), trim(source(i)))
+        end do
+        if (allocated(target)) deallocate(target)
+        call move_alloc(tmp, target)
+    end subroutine copy_name_array
+
     logical function contains_name(list, value) result(found)
         character(len=:), allocatable, intent(in) :: list(:)
         character(len=*), intent(in) :: value
@@ -714,8 +966,10 @@ contains
 
     subroutine apply_config_bindings(cfg, header)
         type(fe_runtime_config), intent(inout) :: cfg
-        type(fe_dataset_header), intent(in) :: header
+        type(fe_dataset_header), intent(inout) :: header
         integer(int32), allocatable :: mapped(:)
+
+        call apply_fe_name_overrides(cfg, header)
 
         if ((.not. allocated(cfg%cluster_fe_dims)) .or. size(cfg%cluster_fe_dims) == 0) then
             if (allocated(cfg%cluster_name_targets) .and. allocated(header%fe_names)) then
@@ -738,8 +992,8 @@ contains
             end if
         end if
 
-        if (allocated(cfg%regressor_name_targets) .and. size(cfg%regressor_name_targets) > 0 .and. &
-            allocated(header%regressor_names)) then
+        if ((.not. cfg%use_formula_design) .and. allocated(cfg%regressor_name_targets) .and. &
+            size(cfg%regressor_name_targets) > 0 .and. allocated(header%regressor_names)) then
             call map_name_list(cfg%regressor_name_targets, header%regressor_names, mapped)
             if (allocated(mapped)) then
                 if (allocated(cfg%regressor_selection)) deallocate(cfg%regressor_selection)
@@ -773,6 +1027,29 @@ contains
 
         call sort_cluster_dimensions(cfg)
     end subroutine apply_config_bindings
+
+    subroutine apply_fe_name_overrides(cfg, header)
+        type(fe_runtime_config), intent(in) :: cfg
+        type(fe_dataset_header), intent(inout) :: header
+        integer :: count
+        character(len=32) :: buf_count, buf_dims
+
+        if (.not. allocated(cfg%fe_override_names)) return
+        count = size(cfg%fe_override_names)
+        if (count == 0) return
+        if (header%n_fe <= 0) then
+            call log_warn('Ignoring fe_names override because dataset has no fixed-effect dimensions.')
+            return
+        end if
+        if (count /= header%n_fe) then
+            write(buf_count, '(I0)') count
+            write(buf_dims, '(I0)') header%n_fe
+            call log_warn('Ignoring fe_names override because it lists ' // trim(buf_count) // &
+                ' entries but the dataset contains ' // trim(buf_dims) // ' FE dimensions.')
+            return
+        end if
+        call copy_name_array(cfg%fe_override_names, header%fe_names)
+    end subroutine apply_fe_name_overrides
 
     subroutine remap_iv_with_selection(cfg)
         type(fe_runtime_config), intent(inout) :: cfg

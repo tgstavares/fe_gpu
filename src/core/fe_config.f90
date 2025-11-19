@@ -3,6 +3,15 @@ module fe_config
     implicit none
     private
 
+    type, public :: fe_formula_term
+        character(len=:), allocatable :: name
+        logical :: is_categorical = .false.
+    end type fe_formula_term
+
+    type, public :: fe_formula_interaction
+        type(fe_formula_term), allocatable :: factors(:)
+    end type fe_formula_interaction
+
     type, public :: fe_runtime_config
         character(len=:), allocatable :: data_path
         real(real64) :: fe_tolerance = 1.0e-6_real64
@@ -18,9 +27,13 @@ module fe_config
         character(len=:), allocatable :: iv_instrument_names(:)
         character(len=:), allocatable :: cluster_name_targets(:)
         character(len=:), allocatable :: fe_name_targets(:)
+        character(len=:), allocatable :: fe_override_names(:)
         character(len=:), allocatable :: regressor_name_targets(:)
         integer(int32), allocatable :: regressor_selection(:)
         integer(int32), allocatable :: fe_selection(:)
+        logical :: use_formula_design = .false.
+        type(fe_formula_term), allocatable :: formula_terms(:)
+        type(fe_formula_interaction), allocatable :: formula_interactions(:)
     end type fe_runtime_config
 
     public :: init_default_config
@@ -39,8 +52,12 @@ contains
         allocate(cfg%cluster_fe_dims(0))
         allocate(cfg%iv_regressors(0))
         allocate(cfg%iv_instrument_cols(0))
+        allocate(character(len=1) :: cfg%fe_override_names(0))
         allocate(cfg%regressor_selection(0))
         allocate(cfg%fe_selection(0))
+        allocate(cfg%formula_terms(0))
+        allocate(cfg%formula_interactions(0))
+        cfg%use_formula_design = .false.
     end subroutine init_default_config
 
     function describe_config(cfg) result(message)
