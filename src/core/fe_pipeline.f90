@@ -792,14 +792,13 @@ contains
                                 used_gpu_ids = .true.
                             else
                                 disable_gpu_cluster_builder = .true.
-                                if (status_build /= 0) then
-                                    if (verbose) then
-                                        write(warn_msg, '("GPU cluster-id builder failed for subset ",A," (status=",I0,"): ",A)') &
-                                            trim(subset_label), status_build, trim(fe_gpu_last_error())
-                                        call log_warn(trim(warn_msg))
-                                    end if
-                                    call fe_gpu_clear_error()
+                                if (verbose) then
+                                    write(warn_msg, '("GPU cluster builder failed subset ",A," status=",I0," clusters=",I0)') &
+                                        trim(subset_label), status_build, n_clusters
+                                    call log_warn(trim(warn_msg))
+                                    call log_warn(trim(fe_gpu_last_error()))
                                 end if
+                                call fe_gpu_clear_error()
                             end if
                         end if
 
