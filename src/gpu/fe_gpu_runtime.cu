@@ -13,7 +13,6 @@
 #include <cstring>
 #include <cstdlib>
 #include <climits>
-#include <limits>
 
 namespace {
 
@@ -344,22 +343,17 @@ __global__ void compute_keys_kernel(const int* const* fe_ptrs,
     }
 }
 
-__global__ void compute_keys_u32_kernel(const int* const* fe_ptrs,
-                                        const unsigned int* strides,
-                                        int n_dims,
-                                        long long n,
-                                        unsigned int* keys) {
+__global__ void compute_flags_from_keys_kernel(const unsigned long long* keys,
+                                               long long n,
+                                               int* flags) {
     long long idx = static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;
     long long stride = static_cast<long long>(blockDim.x) * gridDim.x;
     while (idx < n) {
-        unsigned int key = 0U;
-        for (int d = 0; d < n_dims; ++d) {
-            int val = fe_ptrs[d][idx];
-            if (val > 0) {
-                key += (static_cast<unsigned int>(val - 1) * strides[d]);
-            }
+        if (idx == 0) {
+            flags[idx] = 1;
+        } else {
+            flags[idx] = (keys[idx] != keys[idx - 1]) ? 1 : 0;
         }
-        keys[idx] = key;
         idx += stride;
     }
 }
@@ -590,15 +584,18 @@ int fe_gpu_build_multi_cluster_ids(const void* const* fe_ptrs_host,
     blocks = std::min(blocks, 65535);
 
     const int** d_ptrs = nullptr;
+    unsigned long long* d_strides = nullptr;
+    unsigned long long* d_keys = nullptr;
     int* d_order = nullptr;
     int* d_flags = nullptr;
     int* d_cluster_sorted = nullptr;
     void* temp_scan = nullptr;
     size_t temp_scan_bytes = 0;
     cudaError_t err;
-    bool debug_cluster = (std::getenv("FE_GPU_DEBUG_CLUSTER") != nullptr);
     auto cleanup = [&]() {
         if (d_ptrs) cudaFree(d_ptrs);
+        if (d_strides) cudaFree(d_strides);
+        if (d_keys) cudaFree(d_keys);
         if (d_order) cudaFree(d_order);
         if (d_flags) cudaFree(d_flags);
         if (d_cluster_sorted) cudaFree(d_cluster_sorted);
@@ -614,6 +611,22 @@ int fe_gpu_build_multi_cluster_ids(const void* const* fe_ptrs_host,
     if (err != cudaSuccess) {
         cleanup();
         return store_cuda_error(err, "cudaMemcpy cluster ptrs");
+    }
+    err = cudaMalloc(&d_strides, sizeof(unsigned long long) * static_cast<size_t>(n_dims));
+    if (err != cudaSuccess) {
+        cleanup();
+        return store_cuda_error(err, "cudaMalloc strides");
+    }
+    err = cudaMemcpy(d_strides, strides_host, sizeof(unsigned long long) * static_cast<size_t>(n_dims),
+        cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) {
+        cleanup();
+        return store_cuda_error(err, "cudaMemcpy strides");
+    }
+    err = cudaMalloc(&d_keys, sizeof(unsigned long long) * n);
+    if (err != cudaSuccess) {
+        cleanup();
+        return store_cuda_error(err, "cudaMalloc keys");
     }
     err = cudaMalloc(&d_order, sizeof(int) * n);
     if (err != cudaSuccess) {
@@ -631,203 +644,28 @@ int fe_gpu_build_multi_cluster_ids(const void* const* fe_ptrs_host,
         return store_cuda_error(err, "cudaMalloc cluster buffer");
     }
 
-    if (debug_cluster) {
-        unsigned long long* d_strides_dbg = nullptr;
-        unsigned long long* d_keys_dbg = nullptr;
-        unsigned long long* d_keys_alt = nullptr;
-        int* d_order_dbg = nullptr;
-        int* d_order_alt = nullptr;
-        unsigned int* d_strides_dbg32 = nullptr;
-        unsigned int* d_keys_dbg32 = nullptr;
-        unsigned int* d_keys_alt32 = nullptr;
-        int* d_order_dbg32 = nullptr;
-        int* d_order_alt32 = nullptr;
-        void* temp_dbg = nullptr;
-        void* temp_dbg32 = nullptr;
-        size_t temp_dbg_bytes = 0;
-        size_t temp_dbg_bytes32 = 0;
-        cudaError_t dbg_err;
-
-        dbg_err = cudaMalloc(&d_strides_dbg, sizeof(unsigned long long) * static_cast<size_t>(n_dims));
-        if (dbg_err == cudaSuccess) {
-            dbg_err = cudaMemcpy(d_strides_dbg, strides_host, sizeof(unsigned long long) * static_cast<size_t>(n_dims),
-                cudaMemcpyHostToDevice);
-        }
-        if (dbg_err == cudaSuccess) {
-            std::vector<unsigned int> stride32(n_dims);
-            for (int i = 0; i < n_dims; ++i) {
-                stride32[i] = static_cast<unsigned int>(std::min<unsigned long long>(
-                    strides_host[i], std::numeric_limits<unsigned int>::max()));
-            }
-            dbg_err = cudaMalloc(&d_strides_dbg32, sizeof(unsigned int) * static_cast<size_t>(n_dims));
-            if (dbg_err == cudaSuccess) {
-                dbg_err = cudaMemcpy(d_strides_dbg32, stride32.data(),
-                    sizeof(unsigned int) * static_cast<size_t>(n_dims), cudaMemcpyHostToDevice);
-            }
-        }
-        if (dbg_err == cudaSuccess) dbg_err = cudaMalloc(&d_keys_dbg, sizeof(unsigned long long) * n);
-        if (dbg_err == cudaSuccess) dbg_err = cudaMalloc(&d_keys_alt, sizeof(unsigned long long) * n);
-        if (dbg_err == cudaSuccess) dbg_err = cudaMalloc(&d_order_dbg, sizeof(int) * n);
-        if (dbg_err == cudaSuccess) dbg_err = cudaMalloc(&d_order_alt, sizeof(int) * n);
-        if (dbg_err == cudaSuccess) dbg_err = cudaMalloc(&d_keys_dbg32, sizeof(unsigned int) * n);
-        if (dbg_err == cudaSuccess) dbg_err = cudaMalloc(&d_keys_alt32, sizeof(unsigned int) * n);
-        if (dbg_err == cudaSuccess) dbg_err = cudaMalloc(&d_order_dbg32, sizeof(int) * n);
-        if (dbg_err == cudaSuccess) dbg_err = cudaMalloc(&d_order_alt32, sizeof(int) * n);
-
-        if (dbg_err == cudaSuccess) {
-            compute_keys_kernel<<<blocks, threads>>>(d_ptrs, d_strides_dbg, n_dims, n_obs, d_keys_dbg);
-            dbg_err = cudaGetLastError();
-            if (dbg_err == cudaSuccess) dbg_err = cudaDeviceSynchronize();
-        }
-
-        if (dbg_err == cudaSuccess) {
-            size_t sample = (n < 16) ? static_cast<size_t>(n) : 16;
-            std::vector<unsigned long long> host_keys(sample);
-            cudaMemcpy(host_keys.data(), d_keys_dbg, sizeof(unsigned long long) * sample, cudaMemcpyDeviceToHost);
-            unsigned long long key_min = ULLONG_MAX;
-            unsigned long long key_max = 0ULL;
-            for (size_t s = 0; s < sample; ++s) {
-                key_min = std::min(key_min, host_keys[s]);
-                key_max = std::max(key_max, host_keys[s]);
-            }
-            fprintf(stderr, "GPU cluster debug: key sample min=%llu max=%llu (n=%lld)\n",
-                static_cast<unsigned long long>(key_min), static_cast<unsigned long long>(key_max),
-                static_cast<long long>(n_obs));
-        }
-
-        if (dbg_err == cudaSuccess) {
-            cub::DoubleBuffer<unsigned long long> key_buf(d_keys_dbg, d_keys_alt);
-            cub::DoubleBuffer<int> val_buf(d_order_dbg, d_order_alt);
-            cudaError_t tmp_req = cub::DeviceRadixSort::SortPairs(nullptr, temp_dbg_bytes, key_buf, val_buf,
-                static_cast<int>(n));
-            if (tmp_req != cudaSuccess) {
-                fprintf(stderr, "GPU cluster debug: temp size request error: %s\n", cudaGetErrorString(tmp_req));
-                dbg_err = tmp_req;
-            } else {
-                fprintf(stderr, "GPU cluster debug: CUB temp bytes=%zu\n", temp_dbg_bytes);
-                dbg_err = cudaMalloc(&temp_dbg, temp_dbg_bytes);
-                if (dbg_err == cudaSuccess) {
-                    dbg_err = cub::DeviceRadixSort::SortPairs(temp_dbg, temp_dbg_bytes, key_buf, val_buf,
-                        static_cast<int>(n), 0, 32);
-                }
-                if (dbg_err != cudaSuccess) {
-                    fprintf(stderr, "GPU cluster debug: CUB radix sort error: %s\n", cudaGetErrorString(dbg_err));
-                } else {
-                    dbg_err = cudaDeviceSynchronize();
-                    if (dbg_err != cudaSuccess) {
-                        fprintf(stderr, "GPU cluster debug: CUB sort sync error: %s\n", cudaGetErrorString(dbg_err));
-                    } else {
-                        size_t sample = (n < 8) ? static_cast<size_t>(n) : 8;
-                        std::vector<unsigned long long> host_keys_sorted(sample);
-                        std::vector<int> host_order_sorted(sample);
-                        cudaMemcpy(host_keys_sorted.data(), key_buf.Current(), sizeof(unsigned long long) * sample,
-                            cudaMemcpyDeviceToHost);
-                        cudaMemcpy(host_order_sorted.data(), val_buf.Current(), sizeof(int) * sample,
-                            cudaMemcpyDeviceToHost);
-                        fprintf(stderr, "GPU cluster debug: sorted key/order sample:");
-                        for (size_t s = 0; s < sample; ++s) {
-                            fprintf(stderr, " (%llu,%d)", static_cast<unsigned long long>(host_keys_sorted[s]),
-                                host_order_sorted[s]);
-                        }
-                        fprintf(stderr, "\n");
-                    }
-                }
-            }
-        }
-
-        if (dbg_err == cudaSuccess) {
-            compute_keys_u32_kernel<<<blocks, threads>>>(d_ptrs, d_strides_dbg32, n_dims, n_obs, d_keys_dbg32);
-            dbg_err = cudaGetLastError();
-            if (dbg_err == cudaSuccess) dbg_err = cudaDeviceSynchronize();
-        }
-        if (dbg_err == cudaSuccess) {
-            cub::DoubleBuffer<unsigned int> key_buf32(d_keys_dbg32, d_keys_alt32);
-            cub::DoubleBuffer<int> val_buf32(d_order_dbg32, d_order_alt32);
-            cudaError_t tmp_req32 = cub::DeviceRadixSort::SortPairs(nullptr, temp_dbg_bytes32, key_buf32, val_buf32,
-                static_cast<int>(n), 0, 32);
-            if (tmp_req32 != cudaSuccess) {
-                fprintf(stderr, "GPU cluster debug: CUB32 temp size error: %s\n", cudaGetErrorString(tmp_req32));
-                dbg_err = tmp_req32;
-            } else {
-                fprintf(stderr, "GPU cluster debug: CUB32 temp bytes=%zu\n", temp_dbg_bytes32);
-                dbg_err = cudaMalloc(&temp_dbg32, temp_dbg_bytes32);
-                if (dbg_err == cudaSuccess) {
-                    dbg_err = cub::DeviceRadixSort::SortPairs(temp_dbg32, temp_dbg_bytes32, key_buf32, val_buf32,
-                        static_cast<int>(n), 0, 32);
-                }
-                if (dbg_err != cudaSuccess) {
-                    fprintf(stderr, "GPU cluster debug: CUB32 radix sort error: %s\n", cudaGetErrorString(dbg_err));
-                } else {
-                    dbg_err = cudaDeviceSynchronize();
-                    if (dbg_err != cudaSuccess) {
-                        fprintf(stderr, "GPU cluster debug: CUB32 sync error: %s\n", cudaGetErrorString(dbg_err));
-                    } else {
-                        size_t sample = (n < 8) ? static_cast<size_t>(n) : 8;
-                        std::vector<unsigned int> host_keys_sorted(sample);
-                        std::vector<int> host_order_sorted(sample);
-                        cudaMemcpy(host_keys_sorted.data(), key_buf32.Current(), sizeof(unsigned int) * sample,
-                            cudaMemcpyDeviceToHost);
-                        cudaMemcpy(host_order_sorted.data(), val_buf32.Current(), sizeof(int) * sample,
-                            cudaMemcpyDeviceToHost);
-                        fprintf(stderr, "GPU cluster debug: CUB32 sorted sample:");
-                        for (size_t s = 0; s < sample; ++s) {
-                            fprintf(stderr, " (%u,%d)", host_keys_sorted[s], host_order_sorted[s]);
-                        }
-                        fprintf(stderr, "\n");
-                    }
-                }
-            }
-        }
-
-        if (dbg_err == cudaSuccess) {
-            thrust::device_ptr<unsigned long long> key_begin(d_keys_dbg);
-            thrust::device_ptr<int> order_begin_dbg(d_order_dbg);
-            thrust::sequence(order_begin_dbg, order_begin_dbg + n);
-            thrust::sort(thrust::cuda::par.on(0), key_begin, key_begin + n, thrust::less<unsigned long long>());
-            thrust::sort_by_key(thrust::cuda::par.on(0), key_begin, key_begin + n, order_begin_dbg);
-            cudaError_t th_err = cudaDeviceSynchronize();
-            if (th_err != cudaSuccess) {
-                fprintf(stderr, "GPU cluster debug: thrust sort error: %s\n", cudaGetErrorString(th_err));
-            } else {
-                size_t sample = (n < 8) ? static_cast<size_t>(n) : 8;
-                std::vector<unsigned long long> host_keys_sorted(sample);
-                std::vector<int> host_order_sorted(sample);
-                cudaMemcpy(host_keys_sorted.data(), d_keys_dbg, sizeof(unsigned long long) * sample,
-                    cudaMemcpyDeviceToHost);
-                cudaMemcpy(host_order_sorted.data(), d_order_dbg, sizeof(int) * sample,
-                    cudaMemcpyDeviceToHost);
-                fprintf(stderr, "GPU cluster debug: thrust sorted sample:");
-                for (size_t s = 0; s < sample; ++s) {
-                    fprintf(stderr, " (%llu,%d)", static_cast<unsigned long long>(host_keys_sorted[s]),
-                        host_order_sorted[s]);
-                }
-                fprintf(stderr, "\n");
-            }
-        }
-
-        if (d_strides_dbg) cudaFree(d_strides_dbg);
-        if (d_strides_dbg32) cudaFree(d_strides_dbg32);
-        if (d_keys_dbg) cudaFree(d_keys_dbg);
-        if (d_keys_alt) cudaFree(d_keys_alt);
-        if (d_keys_dbg32) cudaFree(d_keys_dbg32);
-        if (d_keys_alt32) cudaFree(d_keys_alt32);
-        if (d_order_dbg) cudaFree(d_order_dbg);
-        if (d_order_alt) cudaFree(d_order_alt);
-        if (d_order_dbg32) cudaFree(d_order_dbg32);
-        if (d_order_alt32) cudaFree(d_order_alt32);
-        if (temp_dbg) cudaFree(temp_dbg);
-        if (temp_dbg32) cudaFree(temp_dbg32);
+    compute_keys_kernel<<<blocks, threads>>>(d_ptrs, d_strides, n_dims, n_obs, d_keys);
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        cleanup();
+        return store_cuda_error(err, "keys kernel");
+    }
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        cleanup();
+        return store_cuda_error(err, "keys sync");
     }
 
     try {
+        thrust::device_ptr<unsigned long long> key_begin(d_keys);
         thrust::device_ptr<int> order_begin(d_order);
         thrust::sequence(order_begin, order_begin + n);
         auto exec = thrust::cuda::par.on(0);
-        thrust::sort(exec, order_begin, order_begin + n, fe_order_comparator_device(d_ptrs, n_dims));
+        thrust::stable_sort_by_key(exec, key_begin, key_begin + n, order_begin);
         err = cudaGetLastError();
         if (err != cudaSuccess) {
             cleanup();
-            return store_cuda_error(err, "thrust::sort");
+            return store_cuda_error(err, "thrust::sort_by_key");
         }
     } catch (const thrust::system_error& ex) {
         cleanup();
@@ -842,7 +680,7 @@ int fe_gpu_build_multi_cluster_ids(const void* const* fe_ptrs_host,
         return store_cuda_error(err, "sort sync");
     }
 
-    compute_flags_from_order_kernel<<<blocks, threads>>>(d_order, d_ptrs, n_dims, n_obs, d_flags);
+    compute_flags_from_keys_kernel<<<blocks, threads>>>(d_keys, n_obs, d_flags);
     err = cudaGetLastError();
     if (err != cudaSuccess) {
         cleanup();
