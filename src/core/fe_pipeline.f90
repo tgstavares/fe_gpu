@@ -780,6 +780,28 @@ contains
                         ids_buffer = gpu_data%fe_dims(dim_index)%fe_ids
                     else
                         used_gpu_ids = .false.
+                        if (subset_size > 1) then
+                            ! multi-way cluster IDs: CPU builder for correctness
+                            used_gpu_ids = .false.
+                        else if ((.not. result%is_iv) .and. (.not. disable_gpu_cluster_builder)) then
+                            call build_gpu_cluster_ids_helper(gpu_data, subset_dims, group_sizes, d_cluster_temp, &
+                                n_clusters, status_build)
+                            if (status_build == 0 .and. n_clusters > 0) then
+                                min_cluster_size = min(min_cluster_size, n_clusters)
+                                ids_buffer = d_cluster_temp
+                                used_gpu_ids = .true.
+                            else
+                                disable_gpu_cluster_builder = .true.
+                                if (status_build /= 0) then
+                                    if (verbose) then
+                                        write(warn_msg, '("GPU cluster-id builder failed for subset ",A," (status=",I0,"): ",A)') &
+                                            trim(subset_label), status_build, trim(fe_gpu_last_error())
+                                        call log_warn(trim(warn_msg))
+                                    end if
+                                    call fe_gpu_clear_error()
+                                end if
+                            end if
+                        end if
 
                         if (.not. used_gpu_ids) then
                             cpu_cluster_fallbacks = cpu_cluster_fallbacks + 1
