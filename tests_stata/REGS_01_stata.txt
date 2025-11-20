@@ -1,4 +1,4 @@
-r; t=0.00 1:39:12
+r; t=0.00 10:59:32
 
 . 
 . *reghdfe   ln_wage  hours                           ttl_exp union, absorb(idcode occ_code year) vce(cluster idcode occ_code year)

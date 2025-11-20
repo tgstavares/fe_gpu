@@ -18,7 +18,20 @@ module fe_pipeline
     integer(int64), parameter :: INT32_BYTES = storage_size(1_int32) / 8
     integer, parameter :: MAX_CLUSTER_DIMS = 3
     logical, save :: allow_gpu_cluster_builder = .true.
+    logical, parameter :: DEBUG_CLUSTERS = .false.
     private
+
+    interface
+        subroutine dsyev(jobz, uplo, n, a, lda, w, work, lwork, info) bind(C, name="dsyev_")
+            import :: int32, real64
+            character(len=1), intent(in) :: jobz, uplo
+            integer(int32), intent(in) :: n, lda, lwork
+            real(real64), intent(inout) :: a(lda, *)
+            real(real64), intent(out) :: w(*)
+            real(real64), intent(inout) :: work(*)
+            integer(int32), intent(out) :: info
+        end subroutine dsyev
+    end interface
 
     type, public :: fe_estimation_result
         logical :: converged = .false.
@@ -307,7 +320,7 @@ contains
         call system_clock(count=it0)
         if (info == 0) then
             allow_gpu_cluster_builder = .not. (cfg%use_formula_design .and. cfg%formula_has_categorical)
-            call compute_standard_errors(keep_idx, Q_inv_kept, cfg%verbose)
+            call compute_standard_errors(keep_idx, Q_inv_kept, host, group_sizes, cfg%verbose)
             call finalize_regression_stats(result, gpu_data%n_obs, header%n_fe > 0)
         else
             if (allocated(keep_idx)) deallocate(keep_idx)
@@ -637,9 +650,11 @@ contains
             deallocate(Q_sel, b_sel, beta_sel, keep)
         end subroutine solve_with_column_filter
 
-        subroutine compute_standard_errors(idx, Q_inv_kept, verbose)
+        subroutine compute_standard_errors(idx, Q_inv_kept, host_local, group_sizes_local, verbose)
             integer, intent(in) :: idx(:)
             real(real64), intent(in) :: Q_inv_kept(:, :)
+            type(fe_host_arrays), intent(in) :: host_local
+            integer, intent(in) :: group_sizes_local(:)
             logical, intent(in) :: verbose
             type(fe_device_buffer) :: d_beta, d_residual, d_scores, d_meat, d_cluster_temp
             real(real64) :: rss, sigma2, t_start, t_end, weight
@@ -649,6 +664,7 @@ contains
             integer :: n_clusters, min_cluster_size, min_single_cluster
             real(real64), allocatable, target :: meat_full(:, :)
             real(real64), allocatable :: meat_kept(:, :), cov_mat(:, :), cov_accum(:, :)
+            real(real64), allocatable :: cov_cpu(:, :)
             real(real64), allocatable :: diag_vals(:)
             integer :: i, n_cluster_dims, mask, subset_size, subset_pos, dim_index, status_build
             integer, allocatable :: subset_dims(:)
@@ -663,6 +679,12 @@ contains
             logical :: use_projected, used_gpu_ids, disable_gpu_cluster_builder
             integer :: param_count_total, param_count_effective, dof_fes_effective, nested_adj
             integer :: cpu_cluster_fallbacks
+            logical :: psd_fix_applied, psd_check_success
+            real(real64) :: min_eig
+            logical :: enable_debug
+            real(real64), allocatable, target :: host_residual(:), host_reg(:, :)
+            integer(int32), allocatable :: host_combo_ids(:)
+
 
             kept = size(idx)
             if (allocated(result%se)) result%se = 0.0_real64
@@ -700,6 +722,13 @@ contains
                 reg_matrix = gpu_data%d_proj_W
             else
                 reg_matrix = gpu_data%d_W
+            end if
+            enable_debug = DEBUG_CLUSTERS .and. verbose .and. size(result%beta) <= 6
+            if (enable_debug) then
+                allocate(host_residual(int(gpu_data%n_obs)))
+                call fe_memcpy_dtoh(c_loc(host_residual(1)), d_residual)
+                allocate(host_reg(int(gpu_data%n_obs), size(result%beta)))
+                call fe_memcpy_dtoh(c_loc(host_reg(1, 1)), reg_matrix)
             end if
             cluster_success = .true.
             if (.not. has_clusters) then
@@ -751,25 +780,6 @@ contains
                         ids_buffer = gpu_data%fe_dims(dim_index)%fe_ids
                     else
                         used_gpu_ids = .false.
-                        if ((.not. result%is_iv) .and. (.not. disable_gpu_cluster_builder)) then
-                            call build_gpu_cluster_ids_helper(gpu_data, subset_dims, group_sizes, d_cluster_temp, &
-                                n_clusters, status_build)
-                            if (status_build == 0 .and. n_clusters > 0) then
-                                min_cluster_size = min(min_cluster_size, n_clusters)
-                                ids_buffer = d_cluster_temp
-                                used_gpu_ids = .true.
-                            else
-                                disable_gpu_cluster_builder = .true.
-                                if (status_build /= 0) then
-                                    if (verbose) then
-                                        write(warn_msg, '("GPU cluster-id builder failed for subset ",A," (status=",I0,"): ",A)') &
-                                            trim(subset_label), status_build, trim(fe_gpu_last_error())
-                                        call log_warn(trim(warn_msg))
-                                    end if
-                                    call fe_gpu_clear_error()
-                                end if
-                            end if
-                        end if
 
                         if (.not. used_gpu_ids) then
                             cpu_cluster_fallbacks = cpu_cluster_fallbacks + 1
@@ -820,6 +830,21 @@ contains
                     meat_kept = meat_full(idx, idx)
                     cov_mat = matmul(Q_inv_kept, matmul(meat_kept, Q_inv_kept))
                     subset_weight = weight
+                    if (enable_debug .and. kept <= 6) then
+                        call log_matrix('meat['//trim(subset_label)//']', meat_kept)
+                        call log_matrix('cov['//trim(subset_label)//'] before weight', cov_mat)
+                        write(warn_msg, '("weight=",F6.2)') subset_weight
+                        call log_info(trim(warn_msg))
+                        if (enable_debug) then
+                            if (.not. allocated(cov_cpu)) allocate(cov_cpu(kept, kept))
+                            call compute_cpu_covariance(subset_dims, host_local%fe_ids, group_sizes_local, host_residual, &
+                                host_reg, idx, Q_inv_kept, cov_cpu, status_build)
+                            if (status_build == 0) then
+                                call log_matrix('cov_cpu['//trim(subset_label)//']', cov_cpu)
+                            end if
+                            deallocate(cov_cpu)
+                        end if
+                    end if
                     cov_accum = cov_accum + subset_weight * cov_mat
                     deallocate(meat_full, meat_kept, cov_mat)
 
@@ -837,11 +862,9 @@ contains
                 end do
 
                 if (cluster_success) then
-                    dof_fes_effective = result%dof_fes
-                    if (has_clusters) then
-                        dof_fes_effective = result%dof_fes - dof_fes_nested
-                    end if
-                    if (dof_fes_effective < 0) dof_fes_effective = 0
+                    ! Small-sample adjustment (Cameron-Gelbach-Miller) should only subtract model rank;
+                    ! fixed effects are already accounted for by within-transformation.
+                    dof_fes_effective = 0
                     nested_adj = 0
                     if (has_clusters .and. dof_fes_nested > 0) nested_adj = 1
                     param_count_effective = max(0, result%dof_model) + max(0, dof_fes_effective) + nested_adj
@@ -851,6 +874,24 @@ contains
                         scalar = scalar * real(min_single_cluster, real64) / real(min_single_cluster - 1, real64)
                     end if
                     cov_accum = cov_accum * scalar
+                    call symmetrize_upper(cov_accum)
+                    call compute_min_eigenvalue(cov_accum, min_eig, psd_check_success)
+                    if (verbose .and. psd_check_success) then
+                        write(warn_msg, '("Min eigenvalue of clustered VCV before PSD fix: ",ES12.4)') min_eig
+                        call log_info(trim(warn_msg))
+                    end if
+                    call enforce_psd_covariance(cov_accum, psd_fix_applied, psd_check_success)
+                    if (.not. psd_check_success) then
+                        call log_warn('Unable to ensure PSD covariance; eigen decomposition failed.')
+                    else if (psd_fix_applied) then
+                        call log_warn('VCV matrix was non-positive semi-definite; CGM PSD fix applied.')
+                    end if
+                    if (verbose .and. kept <= 6) then
+                        do i = 1, kept
+                            write(warn_msg, '(10(1X,ES12.4))') cov_accum(i, 1:kept)
+                            call log_info(trim(warn_msg))
+                        end do
+                    end if
                     do i = 1, kept
                         result%se(idx(i)) = sqrt(max(0.0_real64, cov_accum(i, i)))
                     end do
@@ -881,10 +922,62 @@ contains
             call fe_device_free(d_beta)
             call fe_device_free(d_residual)
             if (allocated(diag_vals)) deallocate(diag_vals)
+            if (allocated(host_residual)) deallocate(host_residual)
+            if (allocated(host_reg)) deallocate(host_reg)
+            if (allocated(host_combo_ids)) deallocate(host_combo_ids)
 
             call cpu_time(t_end)
             result%time_se = t_end - t_start
         end subroutine compute_standard_errors
+
+        subroutine compute_cpu_covariance(subset_dims, fe_ids, group_sizes, residual_host, reg_host, idx_keep, &
+            Q_inv_kept, cov_out, status_out)
+            integer, intent(in) :: subset_dims(:)
+            integer(int32), intent(in) :: fe_ids(:, :)
+            integer, intent(in) :: group_sizes(:)
+            real(real64), intent(in) :: residual_host(:)
+            real(real64), intent(in) :: reg_host(:, :)
+            integer, intent(in) :: idx_keep(:)
+            real(real64), intent(in) :: Q_inv_kept(:, :)
+            real(real64), intent(out) :: cov_out(:, :)
+            integer, intent(out) :: status_out
+            integer :: n_clusters_local, status_ids
+            integer(int32), allocatable :: host_combo_ids(:)
+            real(real64), allocatable :: scores(:, :)
+            real(real64), allocatable :: meat_cpu(:, :)
+            integer :: obs, j, n_reg
+            integer(int64) :: n_obs
+            character(len=64) :: subset_label
+
+            status_out = 0
+            n_obs = size(residual_host, kind=int64)
+            n_reg = size(reg_host, 2)
+
+            allocate(host_combo_ids(int(n_obs)))
+            call build_cluster_ids(fe_ids, group_sizes, subset_dims, host_combo_ids, n_clusters_local, status_ids)
+            if (status_ids /= 0 .or. n_clusters_local <= 0) then
+                status_out = 1
+                deallocate(host_combo_ids)
+                return
+            end if
+            subset_label = format_subset_dim_list(subset_dims)
+            write(subset_label, '(A,I0)') trim(subset_label)//' clusters=', n_clusters_local
+            call log_info(trim(subset_label))
+
+            allocate(scores(n_clusters_local, n_reg))
+            scores = 0.0_real64
+            do obs = 1, int(n_obs)
+                j = host_combo_ids(obs)
+                if (j < 1 .or. j > n_clusters_local) cycle
+                scores(j, :) = scores(j, :) + residual_host(obs) * reg_host(obs, :)
+            end do
+
+            allocate(meat_cpu(n_reg, n_reg))
+            meat_cpu = matmul(transpose(scores), scores)
+            cov_out = matmul(Q_inv_kept, matmul(meat_cpu(idx_keep, idx_keep), Q_inv_kept))
+
+            deallocate(scores, meat_cpu, host_combo_ids)
+        end subroutine compute_cpu_covariance
 
         subroutine build_gpu_cluster_ids_helper(dataset, subset_dims, group_sizes_local, ids_buf, n_clusters, status)
             type(fe_gpu_dataset), intent(in) :: dataset
@@ -1025,6 +1118,105 @@ contains
                 end do
             end do
         end subroutine symmetrize_upper
+
+        subroutine compute_min_eigenvalue(mat, min_eig, success)
+            real(real64), intent(in) :: mat(:, :)
+            real(real64), intent(out) :: min_eig
+            logical, intent(out) :: success
+            real(real64), allocatable :: work(:)
+            real(real64), allocatable :: eigvals(:)
+            real(real64), allocatable :: scratch(:, :)
+            integer :: n, lwork
+            integer(int32) :: n_i, lda_i, lwork_i, info_i
+
+            success = .false.
+            min_eig = 0.0_real64
+            n = size(mat, 1)
+            if (n <= 0) return
+
+            allocate(scratch(n, n))
+            scratch = mat
+            allocate(eigvals(n))
+            lwork = max(1, 3 * n - 1)
+            allocate(work(lwork))
+
+            n_i = int(n, int32)
+            lda_i = int(max(1, n), int32)
+            lwork_i = int(lwork, int32)
+            call dsyev('N', 'U', n_i, scratch, lda_i, eigvals, work, lwork_i, info_i)
+            deallocate(work)
+            if (info_i /= 0_int32) then
+                deallocate(eigvals, scratch)
+                return
+            end if
+            min_eig = minval(eigvals)
+            success = .true.
+            deallocate(eigvals, scratch)
+        end subroutine compute_min_eigenvalue
+
+        subroutine log_matrix(label, mat)
+            character(len=*), intent(in) :: label
+            real(real64), intent(in) :: mat(:, :)
+            integer :: r, c
+            character(len=256) :: buf
+            call log_info(label)
+            do r = 1, size(mat, 1)
+                write(buf, '(99(1X,ES12.4))') (mat(r, c), c = 1, size(mat, 2))
+                call log_info(trim(buf))
+            end do
+        end subroutine log_matrix
+
+        subroutine enforce_psd_covariance(mat, fix_applied, success)
+            real(real64), intent(inout) :: mat(:, :)
+            logical, intent(out) :: fix_applied
+            logical, intent(out) :: success
+            real(real64), allocatable :: eigvec(:, :)
+            real(real64), allocatable :: eigvals(:)
+            real(real64), allocatable :: work(:)
+            real(real64), allocatable :: scratch(:, :)
+            integer :: n, lwork, idx
+            integer(int32) :: n_i, lda_i, lwork_i, info_i
+            real(real64) :: lambda
+
+            fix_applied = .false.
+            success = .true.
+            n = size(mat, 1)
+            if (n <= 0) return
+
+            allocate(eigvec(n, n))
+            eigvec = mat
+            allocate(eigvals(n))
+            lwork = max(1, 3 * n - 1)
+            allocate(work(lwork))
+
+            n_i = int(n, int32)
+            lda_i = int(max(1, n), int32)
+            lwork_i = int(lwork, int32)
+            call dsyev('V', 'U', n_i, eigvec, lda_i, eigvals, work, lwork_i, info_i)
+            deallocate(work)
+            if (info_i /= 0_int32) then
+                success = .false.
+                deallocate(eigvec, eigvals)
+                return
+            end if
+
+            allocate(scratch(n, n))
+            scratch = 0.0_real64
+            do idx = 1, n
+                lambda = eigvals(idx)
+                if (lambda < 0.0_real64) then
+                    lambda = 0.0_real64
+                    fix_applied = .true.
+                end if
+                if (lambda > 0.0_real64) then
+                    scratch(:, idx) = sqrt(lambda) * eigvec(:, idx)
+                else
+                    scratch(:, idx) = 0.0_real64
+                end if
+            end do
+            mat = matmul(scratch, transpose(scratch))
+            deallocate(eigvec, eigvals, scratch)
+        end subroutine enforce_psd_covariance
 
     end subroutine fe_gpu_estimate
 
