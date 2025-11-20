@@ -67,6 +67,7 @@ contains
 
         allocate(host%y(n_obs))
         allocate(host%W(n_obs, n_reg))
+        allocate(host%Z(n_obs, 0))
         allocate(host%fe_ids(2, n_obs))
 
         host%W(:, 1) = (/ 1.0_real64, 1.5_real64, -0.5_real64, -1.0_real64, 0.25_real64, 2.0_real64 /)
