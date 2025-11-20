@@ -667,6 +667,7 @@ contains
             real(real64), allocatable :: cov_cpu(:, :)
             real(real64), allocatable :: diag_vals(:)
             integer :: i, n_cluster_dims, mask, subset_size, subset_pos, dim_index, status_build
+            integer :: n_clusters_cpu, status_ids
             integer, allocatable :: subset_dims(:)
             real(real64), allocatable, target :: beta_copy(:)
             integer(int32), allocatable, target :: combo_ids(:)
@@ -683,7 +684,7 @@ contains
             real(real64) :: min_eig
             logical :: enable_debug
             real(real64), allocatable, target :: host_residual(:), host_reg(:, :)
-            integer(int32), allocatable :: host_combo_ids(:)
+            integer(int32), allocatable, target :: host_combo_ids(:)
 
 
             kept = size(idx)
@@ -788,6 +789,28 @@ contains
                                 min_cluster_size = min(min_cluster_size, n_clusters)
                                 ids_buffer = d_cluster_temp
                                 used_gpu_ids = .true.
+                                ! Validate GPU-built cluster IDs against CPU builder in verbose mode to avoid silent mismatches.
+                                if (verbose) then
+                                    if (.not. allocated(host_combo_ids)) allocate(host_combo_ids(int(gpu_data%n_obs)))
+                                    if (.not. allocated(combo_ids)) allocate(combo_ids(int(gpu_data%n_obs)))
+                                    call fe_memcpy_dtoh(c_loc(host_combo_ids(1)), ids_buffer)
+                                    call build_cluster_ids(host%fe_ids, group_sizes, subset_dims, combo_ids, &
+                                        n_clusters_cpu, status_ids)
+                                    if (status_ids /= 0 .or. n_clusters_cpu <= 0 .or. &
+                                        any(combo_ids(1:int(gpu_data%n_obs)) /= host_combo_ids)) then
+                                        write(warn_msg, '("GPU cluster IDs mismatch; falling back to CPU for subset ",A)') &
+                                            trim(subset_label)
+                                        call log_warn(trim(warn_msg))
+                                        if (status_ids /= 0 .or. n_clusters_cpu <= 0) then
+                                            cluster_success = .false.
+                                            deallocate(subset_dims)
+                                            exit
+                                        end if
+                                        n_clusters = n_clusters_cpu
+                                        min_cluster_size = min(min_cluster_size, n_clusters)
+                                        call fe_memcpy_htod(ids_buffer, c_loc(combo_ids(1)), bytes_cluster_ids)
+                                    end if
+                                end if
                             else
                                 disable_gpu_cluster_builder = .true.
                                 if (verbose) then
