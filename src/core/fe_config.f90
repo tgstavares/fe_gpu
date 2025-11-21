@@ -18,6 +18,7 @@ module fe_config
         integer(int32) :: fe_max_iterations = 500
         logical :: use_gpu = .true.
         logical :: verbose = .false.
+        logical :: fast_mode = .false.
         integer(int32), allocatable :: cluster_fe_dims(:)
         integer(int32), allocatable :: iv_regressors(:)
         integer(int32), allocatable :: iv_instrument_cols(:)
@@ -49,6 +50,7 @@ contains
         cfg%fe_max_iterations = 500
         cfg%use_gpu = .true.
         cfg%verbose = .false.
+        cfg%fast_mode = .false.
         cfg%data_path = 'data.bin'
         allocate(cfg%cluster_fe_dims(0))
         allocate(cfg%iv_regressors(0))
@@ -78,10 +80,10 @@ contains
         character(len=*), intent(in) :: cluster_str
         type(fe_runtime_config), intent(in) :: cfg
         character(len=*), parameter :: fmt = '("data_path=",A,", tol=",ES10.3,", max_iter=",I0,", use_gpu=",L1,' // &
-            '", verbose=",L1,", cluster_fe=",A,", iv_cols=",A,", iv_z=",A,")")'
+            '", verbose=",L1,", fast=",L1,", cluster_fe=",A,", iv_cols=",A,", iv_z=",A,")")'
 
         write(buf, fmt) trim(cfg%data_path), cfg%fe_tolerance, cfg%fe_max_iterations, cfg%use_gpu, cfg%verbose, &
-            trim(cluster_str), trim(format_cluster_dims(cfg%iv_regressors)), &
+            cfg%fast_mode, trim(cluster_str), trim(format_cluster_dims(cfg%iv_regressors)), &
             trim(format_cluster_dims(cfg%iv_instrument_cols))
     end subroutine describe_to_buffer
 

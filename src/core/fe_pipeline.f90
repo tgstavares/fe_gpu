@@ -319,7 +319,8 @@ contains
 
         call system_clock(count=it0)
         if (info == 0) then
-            allow_gpu_cluster_builder = .not. (cfg%use_formula_design .and. cfg%formula_has_categorical)
+            allow_gpu_cluster_builder = cfg%fast_mode .and. cfg%use_gpu .and. &
+                .not. (cfg%use_formula_design .and. cfg%formula_has_categorical)
             call compute_standard_errors(keep_idx, Q_inv_kept, host, group_sizes, cfg%verbose)
             call finalize_regression_stats(result, gpu_data%n_obs, header%n_fe > 0)
         else
@@ -657,6 +658,7 @@ contains
             integer, intent(in) :: group_sizes_local(:)
             logical, intent(in) :: verbose
             type(fe_device_buffer) :: d_beta, d_residual, d_scores, d_meat, d_cluster_temp
+            type(fe_device_buffer) :: d_scores_pool, d_meat_pool
             real(real64) :: rss, sigma2, t_start, t_end, weight
             integer :: kept, intercept_count
             integer(int64) :: df
@@ -694,6 +696,10 @@ contains
             cpu_cluster_fallbacks = 0
 
             call cpu_time(t_start)
+            d_scores_pool%ptr = c_null_ptr
+            d_scores_pool%size_bytes = 0_int64
+            d_meat_pool%ptr = c_null_ptr
+            d_meat_pool%size_bytes = 0_int64
 
             bytes_reg = int(size(result%beta), int64) * REAL64_BYTES
             call fe_device_alloc(d_beta, bytes_reg)
@@ -745,6 +751,9 @@ contains
                 cov_accum = 0.0_real64
                 bytes_cluster_ids = gpu_data%n_obs * INT32_BYTES
                 call fe_device_alloc(d_cluster_temp, bytes_cluster_ids)
+                allocate(meat_full(size(result%beta), size(result%beta)))
+                allocate(meat_kept(kept, kept))
+                allocate(cov_mat(kept, kept))
 
                 do mask = 1, ishft(1, n_cluster_dims) - 1
                     call cpu_time(subset_start)
@@ -783,41 +792,76 @@ contains
                     else
                         used_gpu_ids = .false.
                         n_clusters = 0
-                        ! Multi-way cluster IDs: build on CPU but copy to GPU and treat as success to keep SE math on GPU.
-                        if (.not. c_associated(d_cluster_temp%ptr)) then
-                            call fe_device_alloc(d_cluster_temp, bytes_cluster_ids)
+                        if (.not. disable_gpu_cluster_builder) then
+                            call build_gpu_cluster_ids_helper(gpu_data, subset_dims, group_sizes, d_cluster_temp, &
+                                n_clusters, status_build)
+                            if (status_build == 0 .and. n_clusters > 0) then
+                                min_cluster_size = min(min_cluster_size, n_clusters)
+                                ids_buffer = d_cluster_temp
+                                used_gpu_ids = .true.
+                            else
+                                disable_gpu_cluster_builder = .true.
+                                if (verbose) then
+                                    write(warn_msg, '("GPU cluster builder failed subset ",A," status=",I0," clusters=",I0)') &
+                                        trim(subset_label), status_build, n_clusters
+                                    call log_warn(trim(warn_msg))
+                                    call log_warn(trim(fe_gpu_last_error()))
+                                end if
+                                call fe_gpu_clear_error()
+                            end if
                         end if
-                        if (.not. allocated(combo_ids)) allocate(combo_ids(int(gpu_data%n_obs)))
-                        call build_cluster_ids(host%fe_ids, group_sizes, subset_dims, combo_ids, n_clusters, status_build)
-                        if (status_build /= 0 .or. n_clusters <= 0) then
-                            call log_warn('Unable to build cluster identifiers for requested subset; skipping cluster SEs.')
-                            cluster_success = .false.
-                            deallocate(subset_dims)
-                            exit
+
+                        if (.not. used_gpu_ids) then
+                            cpu_cluster_fallbacks = cpu_cluster_fallbacks + 1
+                            if (verbose) then
+                                write(warn_msg, '("GPU builder fallback to CPU for subset ",A)') trim(subset_label)
+                                call log_info(trim(warn_msg))
+                            end if
+                            if (.not. c_associated(d_cluster_temp%ptr)) then
+                                call fe_device_alloc(d_cluster_temp, bytes_cluster_ids)
+                            end if
+                            if (.not. allocated(combo_ids)) allocate(combo_ids(int(gpu_data%n_obs)))
+                            call build_cluster_ids(host%fe_ids, group_sizes, subset_dims, combo_ids, n_clusters, status_build)
+                            if (status_build /= 0) then
+                                call log_warn('Unable to build cluster identifiers for requested subset; skipping cluster SEs.')
+                                cluster_success = .false.
+                                deallocate(subset_dims)
+                                exit
+                            end if
+                            if (n_clusters <= 0) then
+                                call log_warn('Cluster subset produced zero groups; skipping cluster SEs.')
+                                cluster_success = .false.
+                                deallocate(subset_dims)
+                                exit
+                            end if
+                            min_cluster_size = min(min_cluster_size, n_clusters)
+                            call fe_memcpy_htod(d_cluster_temp, c_loc(combo_ids(1)), bytes_cluster_ids)
+                            ids_buffer = d_cluster_temp
                         end if
-                        min_cluster_size = min(min_cluster_size, n_clusters)
-                        call fe_memcpy_htod(d_cluster_temp, c_loc(combo_ids(1)), bytes_cluster_ids)
-                        ids_buffer = d_cluster_temp
-                        used_gpu_ids = .true.
                     end if
                     call cpu_time(subset_mid)
 
                     bytes_reg = int(n_clusters, int64) * int(size(result%beta), int64) * REAL64_BYTES
-                    call fe_device_alloc(d_scores, bytes_reg)
+                    if (d_scores_pool%size_bytes < bytes_reg) then
+                        if (c_associated(d_scores_pool%ptr)) call fe_device_free(d_scores_pool)
+                        call fe_device_alloc(d_scores_pool, bytes_reg)
+                    end if
+                    d_scores = d_scores_pool
                     call fe_device_memset(d_scores, 0)
                     call fe_gpu_cluster_scores(d_residual, reg_matrix, ids_buffer, gpu_data%n_obs, size(result%beta), &
                         n_clusters, d_scores)
 
                     bytes_reg = int(size(result%beta), int64) * int(size(result%beta), int64) * REAL64_BYTES
-                    call fe_device_alloc(d_meat, bytes_reg)
+                    if (d_meat_pool%size_bytes < bytes_reg) then
+                        if (c_associated(d_meat_pool%ptr)) call fe_device_free(d_meat_pool)
+                        call fe_device_alloc(d_meat_pool, bytes_reg)
+                    end if
+                    d_meat = d_meat_pool
                     call fe_gpu_cluster_meat(d_scores, n_clusters, size(result%beta), d_meat)
 
-                    allocate(meat_full(size(result%beta), size(result%beta)))
                     call fe_memcpy_dtoh(c_loc(meat_full(1, 1)), d_meat)
                     call symmetrize_upper(meat_full)
 
-                    allocate(meat_kept(kept, kept))
-                    allocate(cov_mat(kept, kept))
                     meat_kept = meat_full(idx, idx)
                     cov_mat = matmul(Q_inv_kept, matmul(meat_kept, Q_inv_kept))
                     subset_weight = weight
@@ -837,10 +881,6 @@ contains
                         end if
                     end if
                     cov_accum = cov_accum + subset_weight * cov_mat
-                    deallocate(meat_full, meat_kept, cov_mat)
-
-                    call fe_device_free(d_scores)
-                    call fe_device_free(d_meat)
                     ! keep device buffer for reuse; freed after clustering loop
                     deallocate(subset_dims)
                     call cpu_time(subset_end)
@@ -900,6 +940,9 @@ contains
                     end do
                 end if
                 if (allocated(cov_accum)) deallocate(cov_accum)
+                if (allocated(meat_full)) deallocate(meat_full)
+                if (allocated(meat_kept)) deallocate(meat_kept)
+                if (allocated(cov_mat)) deallocate(cov_mat)
                 if (c_associated(d_cluster_temp%ptr)) call fe_device_free(d_cluster_temp)
                 if (allocated(combo_ids)) deallocate(combo_ids)
             end if
@@ -917,6 +960,8 @@ contains
             if (allocated(host_reg)) deallocate(host_reg)
             if (allocated(host_combo_ids)) deallocate(host_combo_ids)
             if (allocated(gpu_ids_host)) deallocate(gpu_ids_host)
+            if (c_associated(d_scores_pool%ptr)) call fe_device_free(d_scores_pool)
+            if (c_associated(d_meat_pool%ptr)) call fe_device_free(d_meat_pool)
 
             call cpu_time(t_end)
             result%time_se = t_end - t_start

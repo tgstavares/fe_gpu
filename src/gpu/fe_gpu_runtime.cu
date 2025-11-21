@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>
+#include <thrust/tuple.h>
+#include <thrust/iterator/zip_iterator.h>
 #include <thrust/execution_policy.h>
 #include <thrust/system/cuda/execution_policy.h>
 #include <vector>
@@ -13,6 +15,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <climits>
+#include <limits>
 
 namespace {
 
@@ -38,6 +41,17 @@ struct fe_order_comparator_device {
         // Host comparator only needed for compilation when using device policy.
         return lhs < rhs;
 #endif
+    }
+};
+
+struct zip_key_order_less {
+    __host__ __device__ bool operator()(const thrust::tuple<unsigned long long, int>& lhs,
+                                        const thrust::tuple<unsigned long long, int>& rhs) const {
+        unsigned long long lk = thrust::get<0>(lhs);
+        unsigned long long rk = thrust::get<0>(rhs);
+        if (lk < rk) return true;
+        if (lk > rk) return false;
+        return thrust::get<1>(lhs) < thrust::get<1>(rhs);
     }
 };
 
@@ -580,8 +594,11 @@ int fe_gpu_build_multi_cluster_ids(const void* const* fe_ptrs_host,
     }
     size_t n = static_cast<size_t>(n_obs);
     const int threads = 256;
-    int blocks = static_cast<int>((n_obs + threads - 1) / threads);
-    blocks = std::min(blocks, 65535);
+    size_t blocks_size = (n + threads - 1) / threads;
+    if (blocks_size > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        return store_custom_error("GPU cluster builder input too large for grid configuration");
+    }
+    int blocks = static_cast<int>(blocks_size);
 
     const int** d_ptrs = nullptr;
     unsigned long long* d_strides = nullptr;
@@ -661,7 +678,9 @@ int fe_gpu_build_multi_cluster_ids(const void* const* fe_ptrs_host,
         thrust::device_ptr<int> order_begin(d_order);
         thrust::sequence(order_begin, order_begin + n);
         auto exec = thrust::cuda::par.on(0);
-        thrust::stable_sort_by_key(exec, key_begin, key_begin + n, order_begin);
+        auto zipped_begin = thrust::make_zip_iterator(thrust::make_tuple(key_begin, order_begin));
+        auto zipped_end = thrust::make_zip_iterator(thrust::make_tuple(key_begin + n, order_begin + n));
+        thrust::stable_sort(exec, zipped_begin, zipped_end, zip_key_order_less());
         err = cudaGetLastError();
         if (err != cudaSuccess) {
             cleanup();

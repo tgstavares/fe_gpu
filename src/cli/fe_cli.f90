@@ -69,6 +69,8 @@ contains
                 cfg%use_gpu = .true.
             case ('--verbose')
                 cfg%verbose = .true.
+            case ('--fast')
+                cfg%fast_mode = .true.
             case default
                 write(error_unit, '("Unrecognized option: ",A)') trim(arg)
                 call print_usage()
@@ -105,6 +107,7 @@ contains
         write(error_unit, '(A)') '                             Estimate regression with named columns (config only)'
         write(error_unit, '(A)') '      --cpu-only           Disable GPU acceleration'
         write(error_unit, '(A)') '      --gpu                Force GPU usage when available'
+        write(error_unit, '(A)') '      --fast               Enable faster GPU clustering path (may change clustered SEs)'
         write(error_unit, '(A)') '      --verbose            Enable verbose logging'
         write(error_unit, '(A)') '  -h, --help               Show this help message'
     end subroutine print_usage
@@ -369,6 +372,8 @@ contains
                 if (ios /= 0) call fail_option('Invalid fe_max_iters value in config file')
             case ('use_gpu')
                 cfg%use_gpu = parse_logical(value)
+            case ('fast')
+                cfg%fast_mode = parse_logical(value)
             case ('verbose')
                 cfg%verbose = parse_logical(value)
             case ('formula')
