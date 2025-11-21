@@ -136,8 +136,8 @@ contains
         integer :: i, j
         real(real64) :: demeant, regt, set
         real(real64) :: t_stat, p_value, lower_ci, upper_ci
-        real(real64), parameter :: Z_CRIT = 1.959963984540054_real64
         real(real64), parameter :: INV_SQRT2 = 0.7071067811865475_real64
+        real(real64) :: dof_resid, t_crit
 
         write(msg, '("FE iterations=",I0,", converged=",L1)') est%fe_iterations, est%converged
         call log_info(trim(msg))
@@ -225,9 +225,11 @@ contains
             else
                 t_stat = 0.0_real64
             end if
-            p_value = erfc(abs(t_stat) * INV_SQRT2)
-            lower_ci = est%beta(i) - Z_CRIT * est%se(i)
-            upper_ci = est%beta(i) + Z_CRIT * est%se(i)
+            dof_resid = real(max(1, int(est%dof_resid)), real64)
+            p_value = two_sided_p_from_t(t_stat, dof_resid)
+            t_crit = t_quantile_975(dof_resid)
+            lower_ci = est%beta(i) - t_crit * est%se(i)
+            upper_ci = est%beta(i) + t_crit * est%se(i)
             if (allocated(est%coef_names) .and. size(est%coef_names) >= i) then
                 coef_label = trim(est%coef_names(i))
                 if (len_trim(coef_label) == 0) then
@@ -254,6 +256,119 @@ contains
         call log_info(trim(msg))
         print*, ""
     end subroutine report_results
+
+    pure real(real64) function t_cdf(value, nu) result(cdf)
+        real(real64), intent(in) :: value
+        real(real64), intent(in) :: nu
+        real(real64) :: x, betareg
+        if (nu <= 0.0_real64) then
+            cdf = 0.5_real64
+            return
+        end if
+        if (value == 0.0_real64) then
+            cdf = 0.5_real64
+            return
+        end if
+        x = nu / (nu + value * value)
+        betareg = regularized_incomplete_beta(0.5_real64 * nu, 0.5_real64, x)
+        if (value > 0.0_real64) then
+            cdf = 1.0_real64 - 0.5_real64 * betareg
+        else
+            cdf = 0.5_real64 * betareg
+        end if
+    end function t_cdf
+
+    pure real(real64) function two_sided_p_from_t(t_stat, nu) result(p)
+        real(real64), intent(in) :: t_stat, nu
+        real(real64) :: cdf_val
+        cdf_val = t_cdf(t_stat, nu)
+        p = 2.0_real64 * min(cdf_val, 1.0_real64 - cdf_val)
+    end function two_sided_p_from_t
+
+    pure real(real64) function t_quantile_975(nu) result(tcrit)
+        real(real64), intent(in) :: nu
+        real(real64) :: lo, hi, mid, target, cdf_mid
+        integer :: iter
+        target = 0.975_real64
+        lo = 0.0_real64
+        hi = 10.0_real64
+        do while (t_cdf(hi, nu) < target)
+            hi = hi * 2.0_real64
+            if (hi > 1.0e4_real64) exit
+        end do
+        do iter = 1, 60
+            mid = 0.5_real64 * (lo + hi)
+            cdf_mid = t_cdf(mid, nu)
+            if (cdf_mid < target) then
+                lo = mid
+            else
+                hi = mid
+            end if
+        end do
+        tcrit = 0.5_real64 * (lo + hi)
+    end function t_quantile_975
+
+    pure real(real64) function regularized_incomplete_beta(a, b, x) result(res)
+        real(real64), intent(in) :: a, b, x
+        real(real64) :: bt, qab, qap, qam, c, d, h, ap, bp, app, bpp, am, bm, az, bz, aold, eps, fpmin
+        integer :: m, m2
+
+        eps = 1.0e-12_real64
+        fpmin = 1.0e-30_real64
+
+        if (x <= 0.0_real64) then
+            res = 0.0_real64
+            return
+        else if (x >= 1.0_real64) then
+            res = 1.0_real64
+            return
+        end if
+
+        bt = exp(log_gamma(a + b) - log_gamma(a) - log_gamma(b) + a * log(x) + b * log(1.0_real64 - x))
+        if (x < (a + 1.0_real64) / (a + b + 2.0_real64)) then
+            res = bt * betacf(a, b, x) / a
+        else
+            res = 1.0_real64 - bt * betacf(b, a, 1.0_real64 - x) / b
+        end if
+    end function regularized_incomplete_beta
+
+    pure real(real64) function betacf(a, b, x) result(cf)
+        real(real64), intent(in) :: a, b, x
+        integer, parameter :: max_it = 200
+        real(real64), parameter :: eps = 1.0e-12_real64
+        real(real64), parameter :: fpmin = 1.0e-30_real64
+        integer :: m, m2
+        real(real64) :: aa, c, d, del, h, qab, qap, qam
+
+        qab = a + b
+        qap = a + 1.0_real64
+        qam = a - 1.0_real64
+        c = 1.0_real64
+        d = 1.0_real64 - qab * x / qap
+        if (abs(d) < fpmin) d = fpmin
+        d = 1.0_real64 / d
+        h = d
+        do m = 1, max_it
+            m2 = 2 * m
+            aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+            d = 1.0_real64 + aa * d
+            if (abs(d) < fpmin) d = fpmin
+            c = 1.0_real64 + aa / c
+            if (abs(c) < fpmin) c = fpmin
+            d = 1.0_real64 / d
+            h = h * d * c
+            aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+            d = 1.0_real64 + aa * d
+            if (abs(d) < fpmin) d = fpmin
+            c = 1.0_real64 + aa / c
+            if (abs(c) < fpmin) c = fpmin
+            d = 1.0_real64 / d
+            del = d * c
+            h = h * del
+            if (abs(del - 1.0_real64) < eps) exit
+        end do
+        cf = h
+    end function betacf
 
     subroutine log_fe_dimensions(groups, fe_names)
         integer, intent(in) :: groups(:)

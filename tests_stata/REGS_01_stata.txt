@@ -1,13 +1,13 @@
-r; t=0.00 16:42:17
+r; t=0.00 22:23:37
 
 . 
-. *reghdfe   ln_wage  hours                           ttl_exp union, absorb(idco
+. *reghdfe   ln_wage  hours                           ttl_exp union, absorb(idcode occ_code year
+> ) vce(cluster idcode occ_code year)
+. *ivreghdfe ln_wage (hours          = tenure)        ttl_exp union, absorb(idcode occ_code year
+> ) vce(cluster idcode occ_code year)
+. *ivreghdfe ln_wage (hours wks_work = tenure wks_ue) ttl_exp union, absorb(idcode occ_code year
+> ) vce(cluster idcode occ_code year)
+. *reghdfe ln_wage hours wks_work ttl_exp union c.ttl_exp#c.union i.ind_code##i.msp, absorb(idco
 > de occ_code year) vce(cluster idcode occ_code year)
-. *ivreghdfe ln_wage (hours          = tenure)        ttl_exp union, absorb(idco
-> de occ_code year) vce(cluster idcode occ_code year)
-. *ivreghdfe ln_wage (hours wks_work = tenure wks_ue) ttl_exp union, absorb(idco
-> de occ_code year) vce(cluster idcode occ_code year)
-. *reghdfe ln_wage hours wks_work ttl_exp union c.ttl_exp#c.union i.ind_code##i.
-> msp, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
 . 
 . capture quietly log close
