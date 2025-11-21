@@ -389,17 +389,32 @@ contains
         logical :: in_single, in_double
         character(len=1) :: ch, prev
         logical :: treat_as_comment
+        integer :: first_nonspace
 
         n = len_trim(text)
+        first_nonspace = 0
+        do i = 1, len(text)
+            if (text(i:i) /= ' ' .and. text(i:i) /= char(9)) then
+                first_nonspace = i
+                exit
+            end if
+        end do
+        if (first_nonspace == 1 .and. n > 0) then
+            if (text(1:1) == '#') then
+                text = ''
+                return
+            end if
+        end if
+
         in_single = .false.
         in_double = .false.
-        do i = 1, n
+        do i = 1, len(text)
             ch = text(i:i)
             if (ch == '"' .and. .not. in_single) then
                 in_double = .not. in_double
             else if (ch == '''' .and. .not. in_double) then
                 in_single = .not. in_single
-            else if (ch == '#' .and. .not. in_single .and. .not. in_double) then
+            else if ((ch == '#') .and. .not. in_single .and. .not. in_double) then
                 treat_as_comment = .false.
                 if (i == 1) then
                     treat_as_comment = .true.
@@ -588,8 +603,10 @@ contains
         type(fe_runtime_config), intent(inout) :: cfg
         character(len=*), intent(in) :: token
         if (len_trim(token) == 0) return
-        if (index(token, '##') > 0) then
-            call handle_double_hash(cfg, trim(token))
+        if (index(token, '&&') > 0) then
+            call handle_double_hash(cfg, trim(token), '&&')
+        else if (index(token, '##') > 0) then
+            call handle_double_hash(cfg, trim(token), '##')
         else if (index(token, '#') > 0) then
             call handle_interaction_token(cfg, trim(token))
         else
@@ -597,14 +614,15 @@ contains
         end if
     end subroutine process_formula_token
 
-    subroutine handle_double_hash(cfg, token)
+    subroutine handle_double_hash(cfg, token, delim)
         type(fe_runtime_config), intent(inout) :: cfg
         character(len=*), intent(in) :: token
+        character(len=*), intent(in) :: delim
         character(len=:), allocatable :: parts(:)
         type(fe_formula_term), allocatable :: subset(:)
         integer :: n, mask, subset_size, idx, j
 
-        call split_token_by(token, '##', parts)
+        call split_token_by(token, delim, parts)
         n = size(parts)
         if (n <= 0) return
         do mask = 1, ishft(1, n) - 1
