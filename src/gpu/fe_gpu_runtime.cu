@@ -204,12 +204,8 @@ int launch_simple(size_t n, Kernel kernel, Args... args) {
     const int threads = 256;
     const int blocks = static_cast<int>((n + threads - 1) / threads);
     kernel<<<blocks, threads>>>(args...);
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        return store_cuda_error(err, "kernel launch");
-    }
-    err = cudaDeviceSynchronize();
-    return store_cuda_error(err, "kernel execution");
+    cudaError_t err = cudaPeekAtLastError();
+    return store_cuda_error(err, "kernel launch");
 }
 
 template <typename T>

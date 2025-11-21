@@ -85,6 +85,8 @@ contains
         integer, allocatable :: keep_idx(:)
         real(real64), allocatable :: Q_inv_kept(:, :)
         integer :: it0, it1, itrate
+        real(real64) :: tol_eff
+        integer :: max_iter_eff
         logical, allocatable :: is_endog(:)
         integer, allocatable :: idx_endog(:), idx_exog(:)
         integer :: n_endog, n_exog, n_total_instr, n_selected_instr, n_available_instr
@@ -161,7 +163,13 @@ contains
         call fe_gpu_linalg_initialize()
 
         
-        call fe_gpu_within_transform(gpu_data, cfg%fe_tolerance, cfg%fe_max_iterations, converged, iterations)
+        tol_eff = cfg%fe_tolerance
+        max_iter_eff = cfg%fe_max_iterations
+        if (cfg%fast_mode) then
+            tol_eff = max(cfg%fe_tolerance, 1.0e-6_real64)
+        end if
+
+        call fe_gpu_within_transform(gpu_data, tol_eff, max_iter_eff, converged, iterations)
 
         call system_clock(count=it1)
         result%time_demean = real(it1 - it0) / real(itrate)
