@@ -69,6 +69,12 @@ contains
                 cfg%use_gpu = .true.
             case ('--verbose')
                 cfg%verbose = .true.
+            case ('--cpu-threads')
+                idx = idx + 1
+                if (idx > argc) call fail_option('--cpu-threads requires an integer')
+                call get_command_argument(idx, value)
+                read(value, *, iostat=ios) cfg%cpu_threads
+                if (ios /= 0 .or. cfg%cpu_threads < 0) call fail_option('Invalid integer for --cpu-threads')
             case ('--fast')
                 cfg%fast_mode = .true.
             case default
@@ -107,6 +113,7 @@ contains
         write(error_unit, '(A)') '                             Estimate regression with named columns (config only)'
         write(error_unit, '(A)') '      --cpu-only           Disable GPU acceleration'
         write(error_unit, '(A)') '      --gpu                Force GPU usage when available'
+        write(error_unit, '(A)') '      --cpu-threads <int>  CPU threads for CPU fallbacks (default: OpenMP default)'
         write(error_unit, '(A)') '      --fast               Enable faster GPU clustering path (may change clustered SEs)'
         write(error_unit, '(A)') '      --verbose            Enable verbose logging'
         write(error_unit, '(A)') '  -h, --help               Show this help message'
@@ -370,6 +377,9 @@ contains
             case ('fe_max_iters')
                 read(value, *, iostat=ios) cfg%fe_max_iterations
                 if (ios /= 0) call fail_option('Invalid fe_max_iters value in config file')
+            case ('cpu_threads')
+                read(value, *, iostat=ios) cfg%cpu_threads
+                if (ios /= 0 .or. cfg%cpu_threads < 0) call fail_option('Invalid cpu_threads value in config file')
             case ('use_gpu')
                 cfg%use_gpu = parse_logical(value)
             case ('fast')

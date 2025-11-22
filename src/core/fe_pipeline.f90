@@ -1,5 +1,5 @@
 module fe_pipeline
-    use iso_c_binding, only: c_ptr, c_loc, c_null_ptr, c_associated
+    use iso_c_binding, only: c_ptr, c_loc, c_null_ptr, c_associated, c_int
     use iso_fortran_env, only: int32, int64, real64
     use fe_config, only: fe_runtime_config
     use fe_types, only: fe_dataset_header, fe_host_arrays
@@ -12,6 +12,7 @@ module fe_pipeline
     use fe_solver, only: chol_solve_and_invert
     use fe_logging, only: log_warn, log_info
     use fe_cluster_utils, only: build_cluster_ids
+    use omp_lib, only: omp_get_num_threads, omp_get_thread_num, omp_get_max_threads
     implicit none
     intrinsic :: system_clock
     integer(int64), parameter :: REAL64_BYTES = storage_size(0.0_real64) / 8
@@ -747,11 +748,11 @@ contains
                 call fe_memcpy_dtoh(c_loc(host_reg(1, 1)), reg_matrix)
             end if
             cluster_success = .true.
-            if (.not. has_clusters) then
-                do i = 1, kept
-                    result%se(idx(i)) = sqrt(max(0.0_real64, sigma2 * diag_vals(i)))
-                end do
-            else
+        if (.not. has_clusters) then
+            do i = 1, kept
+                result%se(idx(i)) = sqrt(max(0.0_real64, sigma2 * diag_vals(i)))
+            end do
+        else
                 n_cluster_dims = size(result%cluster_fe_dims)
                 min_cluster_size = huge(0)
                 min_single_cluster = huge(0)
@@ -956,8 +957,8 @@ contains
             end if
 
             if (cpu_cluster_fallbacks > 0 .and. verbose) then
-                write(warn_msg, '("Cluster ID GPU builder unavailable for ",I0," subset(s); CPU fallback used.")') &
-                    cpu_cluster_fallbacks
+                write(warn_msg, '("Cluster ID GPU builder unavailable for ",I0," subset(s); CPU fallback threads=",I0)') &
+                    cpu_cluster_fallbacks, omp_get_max_threads()
                 call log_info(trim(warn_msg))
             end if
 
@@ -993,6 +994,10 @@ contains
             integer :: obs, j, n_reg
             integer(int64) :: n_obs
             character(len=64) :: subset_label
+            integer :: chunk, start_idx, end_idx, tid, nthreads
+            real(real64), allocatable :: scores_local(:, :)
+            character(len=128) :: thread_msg
+            integer :: nthreads_used
 
             status_out = 0
             n_obs = size(residual_host, kind=int64)
@@ -1011,11 +1016,29 @@ contains
 
             allocate(scores(n_clusters_local, n_reg))
             scores = 0.0_real64
-            do obs = 1, int(n_obs)
+            nthreads_used = 1
+
+!$omp parallel default(shared) private(tid, scores_local, obs, j, start_idx, end_idx, chunk, nthreads) shared(n_obs)
+            nthreads = omp_get_num_threads()
+            if (omp_get_thread_num() == 0) nthreads_used = nthreads
+            chunk = int(ceiling(real(n_obs) / real(max(1, nthreads))), kind=int32)
+            allocate(scores_local(n_clusters_local, n_reg))
+            scores_local = 0.0_real64
+            tid = omp_get_thread_num()
+            start_idx = tid * chunk + 1
+            end_idx = min(int(n_obs), start_idx + chunk - 1)
+            do obs = start_idx, end_idx
                 j = host_combo_ids(obs)
                 if (j < 1 .or. j > n_clusters_local) cycle
-                scores(j, :) = scores(j, :) + residual_host(obs) * reg_host(obs, :)
+                scores_local(j, :) = scores_local(j, :) + residual_host(obs) * reg_host(obs, :)
             end do
+!$omp critical
+            scores = scores + scores_local
+!$omp end critical
+            deallocate(scores_local)
+!$omp end parallel
+            write(thread_msg, '("CPU fallback threads used: ",I0)') max(1, nthreads_used)
+            call log_info(trim(thread_msg))
 
             allocate(meat_cpu(n_reg, n_reg))
             meat_cpu = matmul(transpose(scores), scores)

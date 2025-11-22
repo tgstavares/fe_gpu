@@ -25,6 +25,11 @@ set_target_properties(fe_gpu_core PROPERTIES
 target_compile_features(fe_gpu_core PRIVATE cxx_std_17)
 target_link_libraries(fe_gpu_core PUBLIC LAPACK::LAPACK)
 
+find_package(OpenMP)
+if(OpenMP_Fortran_FOUND)
+    target_link_libraries(fe_gpu_core PUBLIC OpenMP::OpenMP_Fortran)
+endif()
+
 if(ENABLE_CUDA)
     add_library(fe_gpu_cuda STATIC gpu/fe_gpu_runtime.cu gpu/fe_gpu_linalg.cu)
     target_include_directories(fe_gpu_cuda PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/gpu)

@@ -8,6 +8,7 @@ program fe_gpu_main
     use fe_gpu_runtime, only: fe_gpu_context, fe_gpu_initialize, fe_gpu_finalize, fe_gpu_backend_available
     use fe_grouping, only: compute_fe_group_sizes
     use fe_pipeline, only: fe_gpu_estimate, fe_estimation_result
+    use omp_lib, only: omp_get_max_threads, omp_set_num_threads
     implicit none
     intrinsic :: system_clock, erfc
     integer, parameter :: MAX_CATEGORIES = 40
@@ -38,6 +39,7 @@ program fe_gpu_main
     real(real64) :: total_time, load_time, grouping_time
     real(real64) :: t10
     logical :: have_estimate
+    character(len=256) :: msg
     integer :: it0, it1, itrate, itotal0, itotal1
 
     print*,""
@@ -64,6 +66,12 @@ program fe_gpu_main
         call fe_gpu_initialize(gpu_ctx)
     end if
     
+    if (cfg%cpu_threads > 0) then
+        call omp_set_num_threads(cfg%cpu_threads)
+    end if
+    write(msg, '("CPU threads available: ",I0," (requested=",I0,")")') omp_get_max_threads(), cfg%cpu_threads
+    call log_info(trim(msg))
+
     inquire(file=cfg%data_path, exist=data_exists)
     if (data_exists) then
         

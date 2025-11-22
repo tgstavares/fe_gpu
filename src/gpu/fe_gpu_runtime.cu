@@ -12,7 +12,6 @@
 #include <thrust/extrema.h>
 #include <thrust/transform_reduce.h>
 #include <thrust/functional.h>
-#include <thrust/iterator/constant_iterator.h>
 #include <thrust/system/cuda/execution_policy.h>
 #include <vector>
 #include <cstdio>
@@ -21,34 +20,10 @@
 #include <climits>
 #include <limits>
 #include <cmath>
-#include <unordered_map>
 
 namespace {
 
 thread_local char g_last_error[512] = "OK";
-
-struct fe_order_comparator_device {
-    const int* const* fe_ptrs;
-    int n_dims;
-
-    __host__ __device__ fe_order_comparator_device(const int* const* ptrs = nullptr, int dims = 0)
-        : fe_ptrs(ptrs), n_dims(dims) {}
-
-    __host__ __device__ bool operator()(const int lhs, const int rhs) const {
-#ifdef __CUDA_ARCH__
-        for (int d = 0; d < n_dims; ++d) {
-            int lhs_val = fe_ptrs[d][lhs];
-            int rhs_val = fe_ptrs[d][rhs];
-            if (lhs_val < rhs_val) return true;
-            if (lhs_val > rhs_val) return false;
-        }
-        return false;
-#else
-        // Host comparator only needed for compilation when using device policy.
-        return lhs < rhs;
-#endif
-    }
-};
 
 struct zip_key_order_less {
     __host__ __device__ bool operator()(const thrust::tuple<unsigned long long, int>& lhs,
@@ -66,57 +41,6 @@ struct abs_functor {
         return fabs(x);
     }
 };
-
-struct CachedSort {
-    int* keys_sorted = nullptr;
-    int* order = nullptr;
-    int* unique_keys = nullptr;
-    int* unique_counts = nullptr;
-    int* counts_tmp = nullptr;
-    double* sums = nullptr;
-    size_t sums_bytes = 0;
-    long long n_obs = 0;
-    int n_unique = 0;
-    int n_groups = 0;
-};
-
-static std::unordered_map<const void*, CachedSort> g_sort_cache;
-
-CachedSort& get_cached_sort(const int* fe_ids, long long n_obs, int n_groups) {
-    auto it = g_sort_cache.find(fe_ids);
-    if (it != g_sort_cache.end()) {
-        if (it->second.n_obs == n_obs && it->second.n_groups == n_groups) {
-            return it->second;
-        }
-        if (it->second.keys_sorted) cudaFree(it->second.keys_sorted);
-        if (it->second.order) cudaFree(it->second.order);
-        if (it->second.unique_keys) cudaFree(it->second.unique_keys);
-        if (it->second.unique_counts) cudaFree(it->second.unique_counts);
-        if (it->second.counts_tmp) cudaFree(it->second.counts_tmp);
-        if (it->second.sums) cudaFree(it->second.sums);
-        it->second = CachedSort();
-    }
-    CachedSort empty;
-    empty.n_groups = n_groups;
-    auto res = g_sort_cache.emplace(fe_ids, empty);
-    return res.first->second;
-}
-
-__global__ void scatter_counts_kernel(const int* keys, const int* counts, int n_unique, int* out_counts, int n_groups) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n_unique) return;
-    int gid = keys[idx] - 1;
-    if (gid < 0 || gid >= n_groups) return;
-    out_counts[gid] = counts[idx];
-}
-
-__global__ void scatter_sums_kernel(const int* keys, const double* sums, int n_unique, double* out, int stride, int n_groups) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n_unique) return;
-    int gid = keys[idx] - 1;
-    if (gid < 0 || gid >= n_groups) return;
-    out[static_cast<size_t>(gid) * static_cast<size_t>(stride)] = sums[idx];
-}
 
 int store_success() {
     std::snprintf(g_last_error, sizeof(g_last_error), "OK");
@@ -269,9 +193,6 @@ int launch_simple(size_t n, Kernel kernel, Args... args) {
     return store_cuda_error(err, "kernel launch");
 }
 
-CachedSort& get_cached_sort(const int* fe_ids, long long n_obs);
-CachedSort& get_cached_sort(const int* fe_ids, long long n_obs, int n_groups);
-
 template <typename T>
 int fe_gpu_fe_accumulate_impl(const T* y,
                               const T* W,
@@ -286,151 +207,7 @@ int fe_gpu_fe_accumulate_impl(const T* y,
                               T* group_sum_W,
                               T* group_sum_Z,
                               int* group_counts) {
-    if (n_obs == 0) return store_success();
-
-    cudaError_t err = cudaSuccess;
-    CachedSort& cache = get_cached_sort(fe_ids, static_cast<long long>(n_obs), n_groups);
-
-    try {
-        auto exec = thrust::cuda::par.on(0);
-        if (!cache.keys_sorted || cache.n_obs != static_cast<long long>(n_obs) || cache.n_groups != n_groups) {
-            if (cache.keys_sorted) cudaFree(cache.keys_sorted);
-            if (cache.order) cudaFree(cache.order);
-            if (cache.unique_keys) cudaFree(cache.unique_keys);
-            if (cache.unique_counts) cudaFree(cache.unique_counts);
-            if (cache.sums) cudaFree(cache.sums);
-            cache = CachedSort();
-            cache.n_obs = static_cast<long long>(n_obs);
-            cache.n_groups = n_groups;
-
-            err = cudaMalloc(&cache.keys_sorted, sizeof(int) * n_obs);
-            if (err != cudaSuccess) goto fallback;
-            err = cudaMalloc(&cache.order, sizeof(int) * n_obs);
-            if (err != cudaSuccess) goto fallback;
-            err = cudaMemcpy(cache.keys_sorted, fe_ids, sizeof(int) * n_obs, cudaMemcpyDeviceToDevice);
-            if (err != cudaSuccess) goto fallback;
-
-            thrust::device_ptr<int> kb(cache.keys_sorted);
-            thrust::device_ptr<int> ke = kb + n_obs;
-            thrust::device_ptr<int> ob(cache.order);
-            thrust::sequence(ob, ob + n_obs);
-            thrust::stable_sort_by_key(exec, kb, ke, ob);
-            err = cudaGetLastError();
-            if (err != cudaSuccess) goto fallback;
-
-            err = cudaMalloc(&cache.unique_keys, sizeof(int) * n_obs);
-            if (err != cudaSuccess) goto fallback;
-            err = cudaMalloc(&cache.unique_counts, sizeof(int) * n_obs);
-            if (err != cudaSuccess) goto fallback;
-
-            thrust::device_ptr<int> ub(cache.unique_keys);
-            thrust::device_ptr<int> cb(cache.unique_counts);
-            auto ones = thrust::make_constant_iterator(1);
-            auto end_pair = thrust::reduce_by_key(exec,
-                                                  kb,
-                                                  ke,
-                                                  ones,
-                                                  ub,
-                                                  cb,
-                                                  thrust::equal_to<int>(),
-                                                  thrust::plus<int>());
-            cache.n_unique = static_cast<int>(end_pair.first - ub);
-            err = cudaGetLastError();
-            if (err != cudaSuccess) goto fallback;
-
-            cache.sums_bytes = static_cast<size_t>(cache.n_unique) * sizeof(T);
-            err = cudaMalloc(&cache.sums, cache.sums_bytes);
-            if (err != cudaSuccess) goto fallback;
-        }
-
-        size_t need_bytes = static_cast<size_t>(cache.n_unique) * sizeof(T);
-        if (cache.sums_bytes < need_bytes) {
-            if (cache.sums) cudaFree(cache.sums);
-            err = cudaMalloc(&cache.sums, need_bytes);
-            if (err != cudaSuccess) goto fallback;
-            cache.sums_bytes = need_bytes;
-        }
-
-        thrust::device_ptr<int> keys_begin(cache.keys_sorted);
-        thrust::device_ptr<int> keys_end = keys_begin + n_obs;
-        thrust::device_ptr<int> order_begin(cache.order);
-        thrust::device_ptr<int> unique_begin(cache.unique_keys);
-        thrust::device_ptr<T> sums_begin(cache.sums);
-
-        int threads = 256;
-        int blocks = (cache.n_unique + threads - 1) / threads;
-
-        scatter_counts_kernel<<<blocks, threads>>>(cache.unique_keys, cache.unique_counts, cache.n_unique, group_counts, n_groups);
-        err = cudaGetLastError();
-        if (err != cudaSuccess) goto fallback;
-
-        {
-            auto val_iter = thrust::make_permutation_iterator(thrust::device_pointer_cast(y), order_begin);
-            thrust::reduce_by_key(exec,
-                                  keys_begin,
-                                  keys_end,
-                                  val_iter,
-                                  unique_begin,
-                                  sums_begin,
-                                  thrust::equal_to<int>(),
-                                  thrust::plus<T>());
-            err = cudaGetLastError();
-            if (err != cudaSuccess) goto fallback;
-            scatter_sums_kernel<<<blocks, threads>>>(cache.unique_keys, cache.sums, cache.n_unique, group_sum_y, 1, n_groups);
-            err = cudaGetLastError();
-            if (err != cudaSuccess) goto fallback;
-        }
-
-        for (int col = 0; col < n_reg_W; ++col) {
-            const T* col_ptr = W + static_cast<size_t>(col) * leading_dim;
-            auto val_iter = thrust::make_permutation_iterator(thrust::device_pointer_cast(col_ptr), order_begin);
-            thrust::reduce_by_key(exec,
-                                  keys_begin,
-                                  keys_end,
-                                  val_iter,
-                                  unique_begin,
-                                  sums_begin,
-                                  thrust::equal_to<int>(),
-                                  thrust::plus<T>());
-            err = cudaGetLastError();
-            if (err != cudaSuccess) goto fallback;
-            scatter_sums_kernel<<<blocks, threads>>>(cache.unique_keys, cache.sums, cache.n_unique, group_sum_W + col * n_groups, 1, n_groups);
-            err = cudaGetLastError();
-            if (err != cudaSuccess) goto fallback;
-        }
-
-        if (n_reg_Z > 0 && Z && group_sum_Z) {
-            for (int col = 0; col < n_reg_Z; ++col) {
-                const T* col_ptr = Z + static_cast<size_t>(col) * leading_dim;
-                auto val_iter = thrust::make_permutation_iterator(thrust::device_pointer_cast(col_ptr), order_begin);
-                thrust::reduce_by_key(exec,
-                                      keys_begin,
-                                      keys_end,
-                                      val_iter,
-                                      unique_begin,
-                                      sums_begin,
-                                      thrust::equal_to<int>(),
-                                      thrust::plus<T>());
-                err = cudaGetLastError();
-                if (err != cudaSuccess) goto fallback;
-                scatter_sums_kernel<<<blocks, threads>>>(cache.unique_keys, cache.sums, cache.n_unique, group_sum_Z + col * n_groups, 1, n_groups);
-                err = cudaGetLastError();
-                if (err != cudaSuccess) goto fallback;
-            }
-        }
-    } catch (const thrust::system_error& ex) {
-        store_custom_error(ex.what());
-        err = cudaErrorUnknown;
-        goto fallback;
-    } catch (...) {
-        store_custom_error("Unknown error in fe_accumulate reduce");
-        err = cudaErrorUnknown;
-        goto fallback;
-    }
-
-    return store_success();
-
-fallback:
+    // Use straightforward atomic accumulation path.
     return launch_simple(n_obs,
                          fe_accumulate_kernel<T>,
                          y,
@@ -491,43 +268,6 @@ int fe_gpu_fe_subtract_impl(T* y,
                          group_mean_y,
                          group_mean_W,
                          group_mean_Z);
-}
-
-__global__ void init_sequence_kernel(int* data, long long n) {
-    long long idx = static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;
-    long long stride = static_cast<long long>(blockDim.x) * gridDim.x;
-    while (idx < n) {
-        data[idx] = static_cast<int>(idx);
-        idx += stride;
-    }
-}
-
-__global__ void compute_flags_from_order_kernel(const int* order,
-                                                const int* const* fe_ptrs,
-                                                int n_dims,
-                                                long long n,
-                                                int* flags) {
-    long long idx = static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;
-    long long stride = static_cast<long long>(blockDim.x) * gridDim.x;
-    while (idx < n) {
-        if (idx == 0) {
-            flags[idx] = 1;
-        } else {
-            int current = order[idx];
-            int prev = order[idx - 1];
-            int diff = 0;
-            for (int d = 0; d < n_dims; ++d) {
-                int val_curr = fe_ptrs[d][current];
-                int val_prev = fe_ptrs[d][prev];
-                if (val_curr != val_prev) {
-                    diff = 1;
-                    break;
-                }
-            }
-            flags[idx] = diff;
-        }
-        idx += stride;
-    }
 }
 
 __global__ void scatter_ids_kernel(const int* order,
