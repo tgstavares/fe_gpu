@@ -1,6 +1,9 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 #define K_MAX_CLUSTER_DIMS 4
 
@@ -30,42 +33,113 @@ static int radix_sort_pairs(uint64_t* keys,
     int32_t* dst_idx = tmp_order;
     int swapped = 0;
 
-    size_t* counts = (size_t*)malloc(kBucketCount * sizeof(size_t));
-    if (!counts) return 6;
+#ifdef _OPENMP
+    int nthreads = omp_get_max_threads();
+#else
+    int nthreads = 1;
+#endif
 
-    for (int pass = 0; pass < kPasses; ++pass) {
-        memset(counts, 0, kBucketCount * sizeof(size_t));
-        unsigned shift = (unsigned)(pass * kRadixBits);
-        for (size_t i = 0; i < n; ++i) {
-            size_t bucket = (size_t)((src_keys[i] >> shift) & kMask);
-            counts[bucket]++;
+    /* Use a simple serial path for small arrays or single-thread runs. */
+    if (nthreads <= 1 || n < 1 << 16) {
+        size_t* counts = (size_t*)malloc(kBucketCount * sizeof(size_t));
+        if (!counts) return 6;
+        for (int pass = 0; pass < kPasses; ++pass) {
+            memset(counts, 0, kBucketCount * sizeof(size_t));
+            unsigned shift = (unsigned)(pass * kRadixBits);
+            for (size_t i = 0; i < n; ++i) {
+                size_t bucket = (size_t)((src_keys[i] >> shift) & kMask);
+                counts[bucket]++;
+            }
+            size_t sum = 0;
+            for (size_t bucket = 0; bucket < kBucketCount; ++bucket) {
+                size_t c = counts[bucket];
+                counts[bucket] = sum;
+                sum += c;
+            }
+            for (size_t i = 0; i < n; ++i) {
+                size_t bucket = (size_t)((src_keys[i] >> shift) & kMask);
+                size_t pos = counts[bucket]++;
+                dst_keys[pos] = src_keys[i];
+                dst_idx[pos] = src_idx[i];
+            }
+            uint64_t* tmpk = src_keys;
+            src_keys = dst_keys;
+            dst_keys = tmpk;
+            int32_t* tmpi = src_idx;
+            src_idx = dst_idx;
+            dst_idx = tmpi;
+            swapped = !swapped;
         }
-        size_t sum = 0;
-        for (size_t bucket = 0; bucket < kBucketCount; ++bucket) {
-            size_t c = counts[bucket];
-            counts[bucket] = sum;
-            sum += c;
+        free(counts);
+    } else {
+        size_t* counts = (size_t*)calloc((size_t)nthreads * kBucketCount, sizeof(size_t));
+        size_t* offsets = (size_t*)malloc((size_t)nthreads * kBucketCount * sizeof(size_t));
+        if (!counts || !offsets) {
+            free(counts);
+            free(offsets);
+            return 6;
         }
-        for (size_t i = 0; i < n; ++i) {
-            size_t bucket = (size_t)((src_keys[i] >> shift) & kMask);
-            size_t pos = counts[bucket]++;
-            dst_keys[pos] = src_keys[i];
-            dst_idx[pos] = src_idx[i];
+        for (int pass = 0; pass < kPasses; ++pass) {
+            unsigned shift = (unsigned)(pass * kRadixBits);
+            memset(counts, 0, (size_t)nthreads * kBucketCount * sizeof(size_t));
+
+#pragma omp parallel default(shared)
+            {
+                int tid = 0;
+#ifdef _OPENMP
+                tid = omp_get_thread_num();
+#endif
+                size_t* local_counts = counts + (size_t)tid * kBucketCount;
+#pragma omp for schedule(static)
+                for (size_t i = 0; i < n; ++i) {
+                    size_t bucket = (size_t)((src_keys[i] >> shift) & kMask);
+                    local_counts[bucket]++;
+                }
+            }
+
+            size_t running = 0;
+            for (size_t bucket = 0; bucket < kBucketCount; ++bucket) {
+                size_t cumulative = 0;
+                for (int t = 0; t < nthreads; ++t) {
+                    size_t c = counts[(size_t)t * kBucketCount + bucket];
+                    offsets[(size_t)t * kBucketCount + bucket] = running + cumulative;
+                    cumulative += c;
+                }
+                running += cumulative;
+            }
+
+#pragma omp parallel default(shared)
+            {
+                int tid = 0;
+#ifdef _OPENMP
+                tid = omp_get_thread_num();
+#endif
+                size_t* local_offsets = offsets + (size_t)tid * kBucketCount;
+#pragma omp for schedule(static)
+                for (size_t i = 0; i < n; ++i) {
+                    size_t bucket = (size_t)((src_keys[i] >> shift) & kMask);
+                    size_t pos = local_offsets[bucket]++;
+                    dst_keys[pos] = src_keys[i];
+                    dst_idx[pos] = src_idx[i];
+                }
+            }
+
+            uint64_t* tmpk = src_keys;
+            src_keys = dst_keys;
+            dst_keys = tmpk;
+            int32_t* tmpi = src_idx;
+            src_idx = dst_idx;
+            dst_idx = tmpi;
+            swapped = !swapped;
         }
-        uint64_t* tmpk = src_keys;
-        src_keys = dst_keys;
-        dst_keys = tmpk;
-        int32_t* tmpi = src_idx;
-        src_idx = dst_idx;
-        dst_idx = tmpi;
-        swapped = !swapped;
+        free(counts);
+        free(offsets);
     }
 
     if (swapped) {
         memcpy(keys, src_keys, n * sizeof(uint64_t));
         memcpy(order, src_idx, n * sizeof(int32_t));
     }
-    free(counts);
     return 0;
 }
 
@@ -217,13 +291,13 @@ int fe_build_cluster_ids(const int32_t* fe_ids,
             multipliers[i] = stride;
             stride *= (uint64_t)subset_sizes[i];
         }
+#pragma omp parallel for schedule(static)
         for (long long obs = 0; obs < n_obs; ++obs) {
             uint64_t key = 0;
             for (int j = 0; j < subset_len; ++j) {
                 int dim = subset_dims[j];
                 if (dim < 1 || dim > ld_fe) {
-                    free(keys);
-                    return 4;
+                    continue;
                 }
                 size_t idx = linear_index(dim - 1, ld_fe, obs);
                 int32_t val = fe_ids[idx];
