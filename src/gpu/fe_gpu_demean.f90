@@ -1,5 +1,5 @@
 module fe_gpu_demean
-    use iso_c_binding, only: c_ptr, c_size_t, c_int, c_loc
+    use iso_c_binding, only: c_ptr, c_size_t, c_int, c_long_long, c_double, c_loc
     use iso_fortran_env, only: int64, real64
     use fe_gpu_runtime, only: fe_gpu_check, fe_device_memset, fe_memcpy_dtoh, fe_device_buffer
     use fe_gpu_data, only: fe_gpu_dataset, fe_gpu_fe_dimension
@@ -10,12 +10,12 @@ module fe_gpu_demean
     public :: fe_gpu_within_transform
 
     interface
-        function c_fe_gpu_fe_accumulate(y, W, Z, fe_ids, n_obs, n_reg, n_inst, leading_dim, group_sum_y, group_sum_W, &
+        function c_fe_gpu_fe_accumulate(y, W, Z, fe_ids, n_obs, n_groups, n_reg, n_inst, leading_dim, group_sum_y, group_sum_W, &
                 group_sum_Z, group_counts) bind(C, name="fe_gpu_fe_accumulate") result(status)
             import :: c_ptr, c_size_t, c_int
             type(c_ptr), value :: y, W, Z, fe_ids, group_sum_y, group_sum_W, group_sum_Z, group_counts
             integer(c_size_t), value :: n_obs, leading_dim
-            integer(c_int), value :: n_reg, n_inst
+            integer(c_int), value :: n_groups, n_reg, n_inst
             integer(c_int) :: status
         end function c_fe_gpu_fe_accumulate
 
@@ -36,6 +36,14 @@ module fe_gpu_demean
             integer(c_int), value :: n_reg, n_inst
             integer(c_int) :: status
         end function c_fe_gpu_fe_subtract
+
+        function c_fe_gpu_absmax(data, n, out) bind(C, name="fe_gpu_absmax") result(status)
+            import :: c_ptr, c_long_long, c_int, c_double
+            type(c_ptr), value :: data
+            integer(c_long_long), value :: n
+            real(c_double), intent(out) :: out
+            integer(c_int) :: status
+        end function c_fe_gpu_absmax
     end interface
 
 contains
@@ -83,9 +91,9 @@ contains
 
                 status = c_fe_gpu_fe_accumulate( &
                     dataset%d_y%ptr, dataset%d_W%ptr, dataset%d_Z%ptr, dataset%fe_dims(d)%fe_ids%ptr, n_obs_c, &
-                    int(n_reg, kind=c_int), int(n_inst, kind=c_int), ldw_c, dataset%fe_dims(d)%group_mean_y%ptr, &
-                    dataset%fe_dims(d)%group_mean_W%ptr, dataset%fe_dims(d)%group_mean_Z%ptr, &
-                    dataset%fe_dims(d)%group_counts%ptr)
+                    int(dataset%fe_dims(d)%n_groups, kind=c_int), int(n_reg, kind=c_int), int(n_inst, kind=c_int), ldw_c, &
+                    dataset%fe_dims(d)%group_mean_y%ptr, dataset%fe_dims(d)%group_mean_W%ptr, &
+                    dataset%fe_dims(d)%group_mean_Z%ptr, dataset%fe_dims(d)%group_counts%ptr)
                 call fe_gpu_check(status, 'accumulating FE statistics')
 
                 status = c_fe_gpu_fe_compute_means( &
@@ -128,21 +136,17 @@ contains
             trim(real_to_string(max_update)))
     end subroutine fe_gpu_within_transform
 
-    real(real64) function abs_copy_to_host(buffer, length) result(max_abs)
-        type(fe_device_buffer), intent(in) :: buffer
-        integer(int64), intent(in) :: length
-        integer(int64) :: bytes
-        real(real64), allocatable, target :: host_copy(:)
+        real(real64) function abs_copy_to_host(buffer, length) result(max_abs)
+            type(fe_device_buffer), intent(in) :: buffer
+            integer(int64), intent(in) :: length
+            integer(c_int) :: status
 
-        max_abs = 0.0_real64
-        if (length <= 0) return
+            max_abs = 0.0_real64
+            if (length <= 0) return
 
-        allocate(host_copy(length))
-        bytes = length * int(storage_size(0.0_real64) / 8, int64)
-        call fe_memcpy_dtoh(c_loc(host_copy(1)), buffer, bytes)
-        max_abs = maxval(abs(host_copy))
-        deallocate(host_copy)
-    end function abs_copy_to_host
+            status = c_fe_gpu_absmax(buffer%ptr, int(length, c_long_long), max_abs)
+            call fe_gpu_check(status, 'computing absmax on device')
+        end function abs_copy_to_host
 
     function int_to_string(value) result(buffer)
         integer, intent(in) :: value

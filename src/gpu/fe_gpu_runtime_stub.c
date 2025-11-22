@@ -134,6 +134,7 @@ int fe_gpu_fe_accumulate(const double* y,
                          const double* Z,
                          const int* fe_ids,
                          size_t n_obs,
+                         int n_groups,
                          int n_reg,
                          int n_inst,
                          size_t leading_dim,
@@ -146,6 +147,7 @@ int fe_gpu_fe_accumulate(const double* y,
     (void)Z;
     (void)fe_ids;
     (void)n_obs;
+    (void)n_groups;
     (void)n_reg;
     (void)n_inst;
     (void)leading_dim;
@@ -195,6 +197,13 @@ int fe_gpu_fe_subtract(double* y,
     (void)group_mean_y;
     (void)group_mean_W;
     (void)group_mean_Z;
+    return set_stub_error();
+}
+
+int fe_gpu_absmax(const double* data, long long n, double* out) {
+    (void)data;
+    (void)n;
+    if (out) *out = 0.0;
     return set_stub_error();
 }
 
