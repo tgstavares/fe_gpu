@@ -12,7 +12,7 @@ set(FE_GPU_SOURCES
     gpu/fe_gpu_demean.f90
     gpu/fe_gpu_linalg.f90
     core/fe_solver.f90
-    core/cluster_id_builder.cpp
+    core/cluster_id_builder.c
 )
 
 add_library(fe_gpu_core STATIC ${FE_GPU_SOURCES})
