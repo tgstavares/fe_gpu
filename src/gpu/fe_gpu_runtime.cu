@@ -110,6 +110,76 @@ __global__ void fe_accumulate_kernel(const T* __restrict__ y,
     }
 }
 
+template <typename T, int kMaxGroups>
+__global__ void fe_accumulate_small_kernel(const T* __restrict__ y,
+                                           const T* __restrict__ W,
+                                           const T* __restrict__ Z,
+                                           const int* __restrict__ fe_ids,
+                                           size_t n_obs,
+                                           int n_reg_W,
+                                           int n_reg_Z,
+                                           size_t leading_dim,
+                                           T* group_sum_y,
+                                           T* group_sum_W,
+                                           T* group_sum_Z,
+                                           int* group_counts,
+                                           int n_groups) {
+    extern __shared__ unsigned char shmem_raw[];
+    T* s_sum_y = reinterpret_cast<T*>(shmem_raw);
+    T* s_sum_W = s_sum_y + kMaxGroups;
+    T* s_sum_Z = s_sum_W + static_cast<size_t>(kMaxGroups) * n_reg_W;
+    int* s_counts = reinterpret_cast<int*>(s_sum_Z + static_cast<size_t>(kMaxGroups) * n_reg_Z);
+
+    for (int gid = threadIdx.x; gid < n_groups; gid += blockDim.x) {
+        s_sum_y[gid] = 0;
+        s_counts[gid] = 0;
+    }
+    for (int idx = threadIdx.x; idx < n_groups * n_reg_W; idx += blockDim.x) {
+        s_sum_W[idx] = 0;
+    }
+    for (int idx = threadIdx.x; idx < n_groups * n_reg_Z; idx += blockDim.x) {
+        s_sum_Z[idx] = 0;
+    }
+    __syncthreads();
+
+    size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const size_t stride = static_cast<size_t>(blockDim.x) * gridDim.x;
+    for (; idx < n_obs; idx += stride) {
+        int gid = fe_ids[idx] - 1;
+        if (gid < 0 || gid >= n_groups) continue;
+
+        atomicAdd(&s_sum_y[gid], y[idx]);
+
+        size_t offset = idx;
+        for (int k = 0; k < n_reg_W; ++k) {
+            atomicAdd(&s_sum_W[gid * n_reg_W + k], W[offset]);
+            offset += leading_dim;
+        }
+
+        if (n_reg_Z > 0 && Z && group_sum_Z) {
+            size_t offset_z = idx;
+            for (int k = 0; k < n_reg_Z; ++k) {
+                atomicAdd(&s_sum_Z[gid * n_reg_Z + k], Z[offset_z]);
+                offset_z += leading_dim;
+            }
+        }
+
+        atomicAdd(&s_counts[gid], 1);
+    }
+    __syncthreads();
+
+    for (int gid = threadIdx.x; gid < n_groups; gid += blockDim.x) {
+        atomicAdd(&group_sum_y[gid], s_sum_y[gid]);
+        atomicAdd(&group_counts[gid], s_counts[gid]);
+    }
+    for (int idx = threadIdx.x; idx < n_groups * n_reg_W; idx += blockDim.x) {
+        atomicAdd(&group_sum_W[idx], s_sum_W[idx]);
+    }
+    for (int idx = threadIdx.x; idx < n_groups * n_reg_Z; idx += blockDim.x) {
+        atomicAdd(&group_sum_Z[idx], s_sum_Z[idx]);
+    }
+}
+
 template <typename T>
 __global__ void fe_compute_means_kernel(T* group_sum_y,
                                         T* group_sum_W,
@@ -208,7 +278,20 @@ int fe_gpu_fe_accumulate_impl(const T* y,
                               T* group_sum_W,
                               T* group_sum_Z,
                               int* group_counts) {
-    // Use straightforward atomic accumulation path.
+    const int kMaxSmall = 1024;
+    if (n_groups > 0 && n_groups <= kMaxSmall && n_reg_W <= 8 && n_reg_Z <= 4) {
+        int threads = 256;
+        int blocks = static_cast<int>(std::min((n_obs + threads - 1) / threads, static_cast<size_t>(65535)));
+        size_t shmem_bytes = sizeof(T) * (static_cast<size_t>(kMaxSmall) * (1 + n_reg_W + n_reg_Z)) +
+                             sizeof(int) * static_cast<size_t>(kMaxSmall);
+        fe_accumulate_small_kernel<T, kMaxSmall><<<blocks, threads, shmem_bytes>>>(
+            y, W, Z, fe_ids, n_obs, n_reg_W, n_reg_Z, leading_dim, group_sum_y, group_sum_W, group_sum_Z, group_counts,
+            n_groups);
+        cudaError_t err = cudaPeekAtLastError();
+        return store_cuda_error(err, "accumulate small kernel");
+    }
+
+    // Fallback to straightforward atomic accumulation path.
     return launch_simple(n_obs,
                          fe_accumulate_kernel<T>,
                          y,
