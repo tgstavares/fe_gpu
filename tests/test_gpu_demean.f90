@@ -27,7 +27,7 @@ program test_gpu_demean
 
     call fe_gpu_initialize(ctx)
     call fe_gpu_dataset_upload(host, group_sizes, dataset)
-    call fe_gpu_within_transform(dataset, 1.0e-8_real64, 200, converged, iterations)
+    call fe_gpu_within_transform(dataset, 1.0e-8_real64, 200, .false., converged, iterations)
     call fe_gpu_dataset_download(dataset, host)
 
     call assert_true(converged, 'FE solver did not converge')

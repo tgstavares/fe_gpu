@@ -294,6 +294,21 @@ int fe_gpu_mix_means_impl(T* mean, T* prev, size_t n, T relaxation) {
     return launch_simple(n, fe_mix_means_kernel<T>, mean, prev, n, relaxation);
 }
 
+template <typename T>
+__global__ void axpy_kernel(int n, T alpha, const T* __restrict__ x, T* __restrict__ y) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = blockDim.x * gridDim.x;
+    for (int i = idx; i < n; i += stride) {
+        y[i] += alpha * x[i];
+    }
+}
+
+struct dot_functor {
+    __host__ __device__ double operator()(const thrust::tuple<double, double>& t) const {
+        return thrust::get<0>(t) * thrust::get<1>(t);
+    }
+};
+
 __global__ void scatter_ids_kernel(const int* order,
                                    const int* cluster_sorted,
                                    int* out_ids,
@@ -527,6 +542,17 @@ int fe_gpu_mix_means(double* mean,
                      size_t n,
                      double relaxation) {
     return fe_gpu_mix_means_impl(mean, prev, n, relaxation);
+}
+
+int fe_gpu_axpy(int n, double alpha, const double* x, double* y) {
+    if (n <= 0 || alpha == 0.0 || !x || !y) {
+        return store_success();
+    }
+    const int threads = 256;
+    int blocks = std::min((n + threads - 1) / threads, 65535);
+    axpy_kernel<<<blocks, threads>>>(n, alpha, x, y);
+    cudaError_t err = cudaPeekAtLastError();
+    return store_cuda_error(err, "axpy kernel");
 }
 
 int fe_gpu_absmax(const double* data, long long n, double* out) {

@@ -170,7 +170,7 @@ contains
             tol_eff = max(cfg%fe_tolerance, 1.0e-6_real64)
         end if
 
-        call fe_gpu_within_transform(gpu_data, tol_eff, max_iter_eff, converged, iterations)
+        call fe_gpu_within_transform(gpu_data, tol_eff, max_iter_eff, cfg%demean_cg, converged, iterations)
 
         call system_clock(count=it1)
         result%time_demean = real(it1 - it0) / real(itrate)

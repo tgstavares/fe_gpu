@@ -77,6 +77,8 @@ contains
                 if (ios /= 0 .or. cfg%cpu_threads < 0) call fail_option('Invalid integer for --cpu-threads')
             case ('--fast')
                 cfg%fast_mode = .true.
+            case ('--demean-cg')
+                cfg%demean_cg = .true.
             case default
                 write(error_unit, '("Unrecognized option: ",A)') trim(arg)
                 call print_usage()

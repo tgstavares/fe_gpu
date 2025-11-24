@@ -181,7 +181,7 @@ int fe_gpu_fe_subtract(double* y,
                        const int* fe_ids,
                        size_t n_obs,
                        int n_reg,
-                       int n_inst,
+                        int n_inst,
                        size_t leading_dim,
                        const double* group_mean_y,
                        const double* group_mean_W,
@@ -199,6 +199,25 @@ int fe_gpu_fe_subtract(double* y,
     (void)group_mean_W;
     (void)group_mean_Z;
     (void)relaxation;
+    return set_stub_error();
+}
+
+int fe_gpu_mix_means(double* mean,
+                     double* prev,
+                     size_t n,
+                     double relaxation) {
+    (void)mean;
+    (void)prev;
+    (void)n;
+    (void)relaxation;
+    return set_stub_error();
+}
+
+int fe_gpu_axpy(int n, double alpha, const double* x, double* y) {
+    (void)n;
+    (void)alpha;
+    (void)x;
+    (void)y;
     return set_stub_error();
 }
 

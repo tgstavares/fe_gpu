@@ -110,6 +110,7 @@ int fe_gpu_mix_means(double* mean,
                      double* prev,
                      size_t n,
                      double relaxation);
+int fe_gpu_axpy(int n, double alpha, const double* x, double* y);
 
 int fe_gpu_absmax(const double* data,
                   long long n,

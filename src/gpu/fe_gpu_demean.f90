@@ -60,15 +60,16 @@ module fe_gpu_demean
 
 contains
 
-    subroutine fe_gpu_within_transform(dataset, tolerance, max_iterations, converged, iterations)
+    subroutine fe_gpu_within_transform(dataset, tolerance, max_iterations, use_cg, converged, iterations)
         type(fe_gpu_dataset), intent(inout) :: dataset
         real(real64), intent(in) :: tolerance
         integer, intent(in) :: max_iterations
+        logical, intent(in) :: use_cg
         logical, intent(out) :: converged
         integer, intent(out) :: iterations
         integer :: iter
         integer :: d, s, sweep
-        integer, parameter :: sweeps_per_iter = 2
+        integer :: sweeps_per_iter
         real(real64) :: max_update
         real(real64) :: change, change_dim
         integer(c_int) :: status
@@ -97,6 +98,7 @@ contains
         allocate(prev_mean_y(dataset%n_fe))
         allocate(prev_mean_W(dataset%n_fe))
         allocate(prev_mean_Z(dataset%n_fe))
+        sweeps_per_iter = merge(4, 2, use_cg)
         relaxation = 1.5_real64
         prev_change = huge(0.0_real64)
         allocate(sweep_order(dataset%n_fe))
