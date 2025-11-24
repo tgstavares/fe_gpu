@@ -100,11 +100,16 @@ int fe_gpu_fe_subtract(double* y,
                        const int* fe_ids,
                        size_t n_obs,
                        int n_reg,
-                        int n_inst,
+                       int n_inst,
                        size_t leading_dim,
                        const double* group_mean_y,
                        const double* group_mean_W,
-                       const double* group_mean_Z);
+                       const double* group_mean_Z,
+                       double relaxation);
+int fe_gpu_mix_means(double* mean,
+                     double* prev,
+                     size_t n,
+                     double relaxation);
 
 int fe_gpu_absmax(const double* data,
                   long long n,

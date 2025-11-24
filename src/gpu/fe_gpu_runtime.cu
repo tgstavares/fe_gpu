@@ -151,7 +151,8 @@ __global__ void fe_subtract_kernel(T* y,
                                    size_t leading_dim,
                                    const T* __restrict__ group_mean_y,
                                    const T* __restrict__ group_mean_W,
-                                   const T* __restrict__ group_mean_Z) {
+                                   const T* __restrict__ group_mean_Z,
+                                   T relaxation) {
     size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     const size_t stride = static_cast<size_t>(blockDim.x) * gridDim.x;
     for (; idx < n_obs; idx += stride) {
@@ -254,7 +255,8 @@ int fe_gpu_fe_subtract_impl(T* y,
                             size_t leading_dim,
                             const T* group_mean_y,
                             const T* group_mean_W,
-                            const T* group_mean_Z) {
+                            const T* group_mean_Z,
+                            T relaxation) {
     return launch_simple(n_obs,
                          fe_subtract_kernel<T>,
                          y,
@@ -267,7 +269,29 @@ int fe_gpu_fe_subtract_impl(T* y,
                          leading_dim,
                          group_mean_y,
                          group_mean_W,
-                         group_mean_Z);
+                         group_mean_Z,
+                         relaxation);
+}
+
+template <typename T>
+__global__ void fe_mix_means_kernel(T* mean, T* prev, size_t n, T relaxation) {
+    size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const size_t stride = static_cast<size_t>(blockDim.x) * gridDim.x;
+    for (; idx < n; idx += stride) {
+        T m = mean[idx];
+        T p = prev[idx];
+        T mixed = p + relaxation * (m - p);
+        prev[idx] = mixed;
+        mean[idx] = mixed;
+    }
+}
+
+template <typename T>
+int fe_gpu_mix_means_impl(T* mean, T* prev, size_t n, T relaxation) {
+    if (n == 0) {
+        return store_success();
+    }
+    return launch_simple(n, fe_mix_means_kernel<T>, mean, prev, n, relaxation);
 }
 
 __global__ void scatter_ids_kernel(const int* order,
@@ -489,12 +513,20 @@ int fe_gpu_fe_subtract(double* y,
                        size_t leading_dim,
                        const double* group_mean_y,
                        const double* group_mean_W,
-                       const double* group_mean_Z) {
+                       const double* group_mean_Z,
+                       double relaxation) {
     if (n_obs == 0) {
         return store_success();
     }
     return fe_gpu_fe_subtract_impl(
-        y, W, Z, fe_ids, n_obs, n_reg, n_inst, leading_dim, group_mean_y, group_mean_W, group_mean_Z);
+        y, W, Z, fe_ids, n_obs, n_reg, n_inst, leading_dim, group_mean_y, group_mean_W, group_mean_Z, relaxation);
+}
+
+int fe_gpu_mix_means(double* mean,
+                     double* prev,
+                     size_t n,
+                     double relaxation) {
+    return fe_gpu_mix_means_impl(mean, prev, n, relaxation);
 }
 
 int fe_gpu_absmax(const double* data, long long n, double* out) {
