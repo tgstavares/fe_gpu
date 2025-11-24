@@ -98,7 +98,7 @@ contains
         allocate(prev_mean_y(dataset%n_fe))
         allocate(prev_mean_W(dataset%n_fe))
         allocate(prev_mean_Z(dataset%n_fe))
-        sweeps_per_iter = merge(4, 2, use_cg)
+        sweeps_per_iter = 2
         relaxation = 1.5_real64
         prev_change = huge(0.0_real64)
         allocate(sweep_order(dataset%n_fe))
