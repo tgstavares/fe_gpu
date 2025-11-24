@@ -678,7 +678,6 @@ contains
             real(real64), allocatable :: cov_cpu(:, :)
             real(real64), allocatable :: diag_vals(:)
             integer :: i, n_cluster_dims, mask, subset_size, subset_pos, dim_index, status_build
-            integer :: n_clusters_cpu, status_ids
             integer, allocatable :: subset_dims(:)
             real(real64), allocatable, target :: beta_copy(:)
             integer(int32), allocatable, target :: combo_ids(:)
@@ -696,7 +695,6 @@ contains
             logical :: enable_debug
             real(real64), allocatable, target :: host_residual(:), host_reg(:, :)
             integer(int32), allocatable, target :: host_combo_ids(:)
-            integer(int32), allocatable, target :: gpu_ids_host(:)
 
 
             kept = size(idx)
@@ -968,7 +966,6 @@ contains
             if (allocated(host_residual)) deallocate(host_residual)
             if (allocated(host_reg)) deallocate(host_reg)
             if (allocated(host_combo_ids)) deallocate(host_combo_ids)
-            if (allocated(gpu_ids_host)) deallocate(gpu_ids_host)
             if (c_associated(d_scores_pool%ptr)) call fe_device_free(d_scores_pool)
             if (c_associated(d_meat_pool%ptr)) call fe_device_free(d_meat_pool)
 

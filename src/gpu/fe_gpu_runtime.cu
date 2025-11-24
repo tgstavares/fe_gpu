@@ -695,16 +695,6 @@ int fe_gpu_build_multi_cluster_ids(const void* const* fe_ptrs_host,
         return store_cuda_error(err, "thrust::reduce");
     }
     if (cluster_count == 0) {
-        int sample = (n_obs < 16) ? static_cast<int>(n_obs) : 16;
-        std::vector<int> host_flags(sample);
-        std::vector<int> host_order(sample);
-        cudaMemcpy(host_flags.data(), d_flags, sizeof(int) * sample, cudaMemcpyDeviceToHost);
-        cudaMemcpy(host_order.data(), d_order, sizeof(int) * sample, cudaMemcpyDeviceToHost);
-        fprintf(stderr, "GPU cluster builder debug (first %d):\\nflags: ", sample);
-        for (int i = 0; i < sample; ++i) fprintf(stderr, "%d ", host_flags[i]);
-        fprintf(stderr, "\\norder: ");
-        for (int i = 0; i < sample; ++i) fprintf(stderr, "%d ", host_order[i]);
-        fprintf(stderr, "\\n");
         cleanup();
         return store_custom_error("GPU cluster builder produced zero clusters");
     }
