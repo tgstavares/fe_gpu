@@ -7,7 +7,7 @@ program fe_gpu_main
     use fe_data_io, only: load_dataset_from_file, release_host_arrays
     use fe_gpu_runtime, only: fe_gpu_context, fe_gpu_initialize, fe_gpu_finalize, fe_gpu_backend_available
     use fe_grouping, only: compute_fe_group_sizes
-    use fe_pipeline, only: fe_gpu_estimate, fe_estimation_result
+    use fe_pipeline, only: fe_gpu_estimate, fe_cpu_estimate, fe_estimation_result
     use omp_lib, only: omp_get_max_threads, omp_set_num_threads
     implicit none
     intrinsic :: system_clock, erfc
@@ -88,26 +88,35 @@ program fe_gpu_main
         load_time = real(it1 - it0) / real(itrate)
         !call log_info('Dataset summary -> ' // header%summary())
         
-        if (use_gpu) then
-
-
-            call system_clock(count=it0)
-            call compute_fe_group_sizes(host%fe_ids, group_sizes)
-            if (allocated(header%fe_names) .and. size(header%fe_names) == size(group_sizes)) then
-                call log_fe_dimensions(group_sizes, header%fe_names)
-            else
-                call log_fe_dimensions(group_sizes)
-            end if
-            call system_clock(it1)
-            grouping_time = real(it1 - it0)/real(itrate)
-            
-
-            call fe_gpu_estimate(cfg, header, host, group_sizes, est)
-            have_estimate = .true.
-            deallocate(group_sizes)
+    if (use_gpu) then
+        call system_clock(count=it0)
+        call compute_fe_group_sizes(host%fe_ids, group_sizes)
+        if (allocated(header%fe_names) .and. size(header%fe_names) == size(group_sizes)) then
+            call log_fe_dimensions(group_sizes, header%fe_names)
         else
-            call log_warn('CPU-only execution path is not available yet.')
+            call log_fe_dimensions(group_sizes)
         end if
+        call system_clock(it1)
+        grouping_time = real(it1 - it0)/real(itrate)
+
+        call fe_gpu_estimate(cfg, header, host, group_sizes, est)
+        have_estimate = .true.
+        deallocate(group_sizes)
+    else
+        call system_clock(count=it0)
+        call compute_fe_group_sizes(host%fe_ids, group_sizes)
+        if (allocated(header%fe_names) .and. size(header%fe_names) == size(group_sizes)) then
+            call log_fe_dimensions(group_sizes, header%fe_names)
+        else
+            call log_fe_dimensions(group_sizes)
+        end if
+        call system_clock(it1)
+        grouping_time = real(it1 - it0)/real(itrate)
+
+        call fe_cpu_estimate(cfg, header, host, group_sizes, est)
+        have_estimate = .true.
+        deallocate(group_sizes)
+    end if
 
         call release_host_arrays(host)
     else

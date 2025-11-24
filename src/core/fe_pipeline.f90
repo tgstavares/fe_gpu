@@ -64,8 +64,204 @@ module fe_pipeline
     end type fe_estimation_result
 
     public :: fe_gpu_estimate
+    public :: fe_cpu_estimate
 
 contains
+
+    subroutine fe_cpu_estimate(cfg, header, host, group_sizes, result)
+        type(fe_runtime_config), intent(in) :: cfg
+        type(fe_dataset_header), intent(in) :: header
+        type(fe_host_arrays), intent(inout) :: host
+        integer, intent(in) :: group_sizes(:)
+        type(fe_estimation_result), intent(inout) :: result
+        integer :: i, k, n_obs, n_fe, iter, d, n_reg
+        real(real64) :: tol, max_update, rss, sigma2
+        integer :: max_iters
+        real(real64), allocatable :: WW(:, :), Wy(:), Q_inv(:, :), variance_diag(:)
+        integer :: info
+        real(real64) :: t0, t1
+        character(len=256) :: msg
+        integer, allocatable :: keep_idx(:)
+
+        n_obs = size(host%y)
+        n_reg = size(host%W, 2)
+        n_fe = header%n_fe
+        tol = cfg%fe_tolerance
+        max_iters = cfg%fe_max_iterations
+        max_update = 0.0_real64
+
+        if (allocated(result%beta)) deallocate(result%beta)
+        if (allocated(result%se)) deallocate(result%se)
+        if (allocated(result%cluster_fe_dims)) deallocate(result%cluster_fe_dims)
+        allocate(result%beta(max(0, n_reg)))
+        allocate(result%se(max(0, n_reg)))
+        result%beta = 0.0_real64
+        result%se = 0.0_real64
+        allocate(result%cluster_fe_dims(0))
+
+        call cpu_time(t0)
+        if (n_fe > 0) then
+            do iter = 1, max_iters
+                max_update = 0.0_real64
+                do d = 1, n_fe
+                    call cpu_demean_single(host%y, host%W, host%fe_ids(d, :), group_sizes(d), max_update)
+                end do
+                if (max_update < tol) exit
+            end do
+            result%fe_iterations = iter
+            result%converged = max_update < tol
+        else
+            result%fe_iterations = 0
+            result%converged = .true.
+        end if
+        call cpu_time(t1)
+        result%time_demean = t1 - t0
+
+        if (n_reg > 0) then
+            allocate(WW(n_reg, n_reg))
+            allocate(Wy(n_reg))
+            WW = matmul(transpose(host%W), host%W)
+            Wy = matmul(transpose(host%W), host%y)
+            allocate(Q_inv(n_reg, n_reg))
+            allocate(variance_diag(n_reg))
+            variance_diag = 0.0_real64
+
+            ! Solve WW * beta = Wy using LU factorization
+            info = 0
+            call lapack_solve_and_invert(WW, Wy, Q_inv, info)
+            result%solver_info = info
+            call cpu_time(t0)
+            result%time_regression = t0 - t1
+
+            if (info /= 0) then
+                if (allocated(WW)) deallocate(WW)
+                if (allocated(Wy)) deallocate(Wy)
+                if (allocated(Q_inv)) deallocate(Q_inv)
+                if (allocated(variance_diag)) deallocate(variance_diag)
+                return
+            end if
+
+            result%beta = Wy
+            result%rank = n_reg
+            result%dof_model = n_reg
+
+            rss = compute_rss(host%y, host%W, result%beta)
+            sigma2 = rss / max(1.0_real64, real(n_obs - n_reg, real64))
+            do i = 1, size(result%beta)
+                result%se(i) = sqrt(max(0.0_real64, sigma2 * Q_inv(i, i)))
+            end do
+            result%dof_resid = n_obs - n_reg
+            call cpu_time(t1)
+            result%time_se = t1 - t0
+            if (allocated(WW)) deallocate(WW)
+            if (allocated(Wy)) deallocate(Wy)
+            if (allocated(Q_inv)) deallocate(Q_inv)
+            if (allocated(variance_diag)) deallocate(variance_diag)
+        end if
+
+        write(msg, '("CPU FE solver iterations=",I0,", max_update=",ES12.3)') result%fe_iterations, max_update
+        call log_info(trim(msg))
+    contains
+        subroutine cpu_demean_single(y_vec, W_mat, fe_ids_dim, n_groups, max_change)
+            real(real64), intent(inout) :: y_vec(:)
+            real(real64), intent(inout) :: W_mat(:, :)
+            integer(int32), intent(in) :: fe_ids_dim(:)
+            integer, intent(in) :: n_groups
+            real(real64), intent(inout) :: max_change
+            real(real64), allocatable :: sum_y(:)
+            real(real64), allocatable :: sum_W(:, :)
+            integer, allocatable :: counts(:)
+            integer :: i, j, g, n, kcols
+
+            n = size(y_vec)
+            kcols = size(W_mat, 2)
+            if (n_groups <= 0) return
+            allocate(sum_y(n_groups))
+            allocate(sum_W(n_groups, kcols))
+            allocate(counts(n_groups))
+            sum_y = 0.0_real64
+            sum_W = 0.0_real64
+            counts = 0
+!$omp parallel do default(shared) private(i,g,j) reduction(+:sum_y,sum_W,counts)
+            do i = 1, n
+                g = fe_ids_dim(i)
+                if (g < 1 .or. g > n_groups) cycle
+                sum_y(g) = sum_y(g) + y_vec(i)
+                counts(g) = counts(g) + 1
+                do j = 1, kcols
+                    sum_W(g, j) = sum_W(g, j) + W_mat(i, j)
+                end do
+            end do
+
+            do g = 1, n_groups
+                if (counts(g) > 0) then
+                    sum_y(g) = sum_y(g) / counts(g)
+                    do j = 1, kcols
+                        sum_W(g, j) = sum_W(g, j) / counts(g)
+                    end do
+                else
+                    sum_y(g) = 0.0_real64
+                    sum_W(g, :) = 0.0_real64
+                end if
+            end do
+
+!$omp parallel do default(shared) private(i,g,j) reduction(max:max_change)
+            do i = 1, n
+                g = fe_ids_dim(i)
+                if (g < 1 .or. g > n_groups) cycle
+                y_vec(i) = y_vec(i) - sum_y(g)
+                max_change = max(max_change, abs(sum_y(g)))
+                do j = 1, kcols
+                    W_mat(i, j) = W_mat(i, j) - sum_W(g, j)
+                    max_change = max(max_change, abs(sum_W(g, j)))
+                end do
+            end do
+
+            deallocate(sum_y, sum_W, counts)
+        end subroutine cpu_demean_single
+
+        function compute_rss(y_vec, W_mat, beta_vec) result(out)
+            real(real64), intent(in) :: y_vec(:)
+            real(real64), intent(in) :: W_mat(:, :)
+            real(real64), intent(in) :: beta_vec(:)
+            real(real64) :: out
+            real(real64), allocatable :: res(:)
+            allocate(res(size(y_vec)))
+            res = y_vec - matmul(W_mat, beta_vec)
+            out = sum(res * res)
+            deallocate(res)
+        end function compute_rss
+
+        subroutine lapack_solve_and_invert(A, b, inv_out, info_out)
+            real(real64), intent(inout) :: A(:, :)
+            real(real64), intent(inout) :: b(:)
+            real(real64), intent(out) :: inv_out(:, :)
+            integer, intent(out) :: info_out
+            integer, allocatable :: ipiv(:)
+            real(real64), allocatable :: work(:)
+            integer :: n, lda, ldb, lwork, info_lapack
+
+            n = size(b)
+            lda = max(1, n)
+            ldb = max(1, n)
+            allocate(ipiv(n))
+            info_lapack = 0
+            call dgesv(n, 1, A, lda, ipiv, b, ldb, info_lapack)
+            info_out = info_lapack
+            if (info_out /= 0) then
+                deallocate(ipiv)
+                return
+            end if
+
+            inv_out = A
+            lwork = max(1, 4 * n)
+            allocate(work(lwork))
+            call dgetri(n, inv_out, lda, ipiv, work, lwork, info_lapack)
+            info_out = info_lapack
+            deallocate(ipiv, work)
+        end subroutine lapack_solve_and_invert
+    end subroutine fe_cpu_estimate
+
 
     subroutine fe_gpu_estimate(cfg, header, host, group_sizes, result)
         type(fe_runtime_config), intent(in) :: cfg
