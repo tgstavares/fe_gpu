@@ -5,7 +5,8 @@ program fe_gpu_main
     use fe_logging, only: log_info, log_warn
     use fe_types, only: fe_dataset_header, fe_host_arrays
     use fe_data_io, only: load_dataset_from_file, release_host_arrays
-    use fe_gpu_runtime, only: fe_gpu_context, fe_gpu_initialize, fe_gpu_finalize, fe_gpu_backend_available
+    use fe_gpu_runtime, only: fe_gpu_context, fe_gpu_initialize, fe_gpu_finalize, fe_gpu_backend_available, &
+        fe_gpu_set_logging
     use fe_grouping, only: compute_fe_group_sizes
     use fe_pipeline, only: fe_gpu_estimate, fe_cpu_estimate, fe_estimation_result
     use omp_lib, only: omp_get_max_threads, omp_set_num_threads
@@ -28,6 +29,7 @@ program fe_gpu_main
         integer, allocatable :: levels(:)
         logical :: valid = .false.
         logical :: is_instrument = .false.
+        integer(int32) :: base_level = 1
     end type variable_info_entry
     type(fe_runtime_config) :: cfg
     type(fe_dataset_header) :: header
@@ -64,14 +66,17 @@ program fe_gpu_main
 
 
     if (use_gpu) then
+        call fe_gpu_set_logging(cfg%verbose)
         call fe_gpu_initialize(gpu_ctx)
     end if
     
     if (cfg%cpu_threads > 0) then
         call omp_set_num_threads(cfg%cpu_threads)
     end if
-    write(msg, '("CPU threads available: ",I0," (requested=",I0,")")') omp_get_max_threads(), cfg%cpu_threads
-    call log_info(trim(msg))
+    if (cfg%verbose) then
+        write(msg, '("CPU threads available: ",I0," (requested=",I0,")")') omp_get_max_threads(), cfg%cpu_threads
+        call log_info(trim(msg))
+    end if
 
     inquire(file=cfg%data_path, exist=data_exists)
     if (data_exists) then
@@ -150,7 +155,7 @@ contains
         character(len=128) :: iv_list
         character(len=64) :: coef_label
         character(len=64) :: cluster_label
-        character(len=15) :: coef_label_trim
+        character(len=29) :: coef_label_trim
         integer :: i, j
         real(real64) :: demeant, regt, set
         real(real64) :: t_stat, p_value, lower_ci, upper_ci
@@ -799,14 +804,18 @@ contains
     integer function count_columns_for_term(term, infos) result(total)
         type(fe_formula_term), intent(in) :: term
         type(variable_info_entry), intent(in) :: infos(:)
-        integer :: idx
+        integer :: idx, base_idx
         total = 0
         idx = find_variable_info(infos, term%name)
         if (idx <= 0) return
         if (.not. infos(idx)%valid) return
         if (term%is_categorical) then
             if (.not. allocated(infos(idx)%levels)) return
-            if (size(infos(idx)%levels) > 1) total = size(infos(idx)%levels) - 1
+            if (size(infos(idx)%levels) > 1) then
+                base_idx = find_level_index(infos(idx)%levels, term%base_level)
+                if (base_idx <= 0) base_idx = 1
+                total = size(infos(idx)%levels) - 1
+            end if
         else
             total = 1
         end if
@@ -866,6 +875,7 @@ contains
         do i = 1, count_names
             infos(i)%name = names(i)
             infos(i)%needs_levels = need_cat(i)
+            infos(i)%base_level = get_base_for_name(cfg, names(i))
             call find_variable_index(header, names(i), infos(i)%column_index, infos(i)%is_instrument)
             if (infos(i)%column_index <= 0) then
                 call log_warn('Variable "' // trim(names(i)) // '" not found in dataset; dropping.')
@@ -908,6 +918,7 @@ contains
         do i = 1, size(names)
             infos(i)%name = names(i)
             infos(i)%needs_levels = need_cat(i)
+            infos(i)%base_level = get_base_for_name(cfg, names(i))
             call find_instrument_index(header, names(i), infos(i)%column_index)
             infos(i)%is_instrument = .true.
             if (infos(i)%column_index <= 0) then
@@ -1068,6 +1079,53 @@ contains
         end do
     end function find_regressor_index
 
+    integer function find_level_index(levels, target) result(pos)
+        integer, intent(in) :: levels(:)
+        integer, intent(in) :: target
+        integer :: i
+        pos = 0
+        do i = 1, size(levels)
+            if (levels(i) == target) then
+                pos = i
+                return
+            end if
+        end do
+    end function find_level_index
+
+    integer function get_base_for_name(cfg, varname) result(base)
+        type(fe_runtime_config), intent(in) :: cfg
+        character(len=*), intent(in) :: varname
+        integer :: i, j
+        base = 1
+        do i = 1, size(cfg%formula_terms)
+            if (to_lower(trim(cfg%formula_terms(i)%name)) == to_lower(trim(varname))) then
+                base = cfg%formula_terms(i)%base_level
+                return
+            end if
+        end do
+        do i = 1, size(cfg%formula_interactions)
+            if (.not. allocated(cfg%formula_interactions(i)%factors)) cycle
+            do j = 1, size(cfg%formula_interactions(i)%factors)
+                if (to_lower(trim(cfg%formula_interactions(i)%factors(j)%name)) == to_lower(trim(varname))) then
+                    base = cfg%formula_interactions(i)%factors(j)%base_level
+                    return
+                end if
+            end do
+        end do
+        do i = 1, size(cfg%iv_regressor_terms)
+            if (to_lower(trim(cfg%iv_regressor_terms(i)%name)) == to_lower(trim(varname))) then
+                base = cfg%iv_regressor_terms(i)%base_level
+                return
+            end if
+        end do
+        do i = 1, size(cfg%iv_instrument_terms)
+            if (to_lower(trim(cfg%iv_instrument_terms(i)%name)) == to_lower(trim(varname))) then
+                base = cfg%iv_instrument_terms(i)%base_level
+                return
+            end if
+        end do
+    end function get_base_for_name
+
     subroutine find_variable_index(header, name, idx, is_instr)
         type(fe_dataset_header), intent(in) :: header
         character(len=*), intent(in) :: name
@@ -1129,6 +1187,7 @@ contains
         integer :: level
         integer :: row
         logical :: is_endog
+        integer :: base_idx
 
         info_index = find_variable_info(infos, term%name)
         if (info_index <= 0) return
@@ -1147,7 +1206,10 @@ contains
             if (.not. allocated(infos(info_index)%levels)) return
             level_count = size(infos(info_index)%levels)
             if (level_count <= 1) return
-            do i = 2, level_count
+            base_idx = find_level_index(infos(info_index)%levels, term%base_level)
+            if (base_idx <= 0) base_idx = 1
+            do i = 1, level_count
+                if (i == base_idx) cycle
                 col_ptr = col_ptr + 1
                 if (col_ptr > size(design, 2)) return
                 design(:, col_ptr) = 0.0_real64
@@ -1171,7 +1233,7 @@ contains
         character(len=:), allocatable, intent(inout) :: names(:)
         integer, intent(inout) :: col_ptr
         integer, intent(inout) :: max_len
-        integer :: info_index, idx, level_count, i, row, level
+        integer :: info_index, idx, level_count, i, row, level, base_idx
 
         info_index = find_variable_info(infos, term%name)
         if (info_index <= 0) return
@@ -1188,7 +1250,10 @@ contains
             if (.not. allocated(infos(info_index)%levels)) return
             level_count = size(infos(info_index)%levels)
             if (level_count <= 1) return
-            do i = 2, level_count
+            base_idx = find_level_index(infos(info_index)%levels, term%base_level)
+            if (base_idx <= 0) base_idx = 1
+            do i = 1, level_count
+                if (i == base_idx) cycle
                 col_ptr = col_ptr + 1
                 if (col_ptr > size(design, 2)) return
                 design(:, col_ptr) = 0.0_real64
@@ -1273,7 +1338,7 @@ contains
         real(real64), allocatable, intent(out) :: data(:, :)
         character(len=:), allocatable, intent(out) :: labels(:)
         logical, allocatable, intent(out) :: endog_flags(:)
-        integer :: info_index, idx, n_obs, level_count, i, row
+        integer :: info_index, idx, n_obs, level_count, i, row, base_idx, col_idx
         logical :: is_endog
 
         if (allocated(data)) deallocate(data)
@@ -1296,18 +1361,23 @@ contains
             if (.not. allocated(infos(info_index)%levels)) return
             level_count = size(infos(info_index)%levels)
             if (level_count <= 1) return
+            base_idx = find_level_index(infos(info_index)%levels, term%base_level)
+            if (base_idx <= 0) base_idx = 1
             allocate(data(n_obs, level_count - 1))
             allocate(character(len=NAME_BUFFER_LEN) :: labels(level_count - 1))
             allocate(endog_flags(level_count - 1))
             data = 0.0_real64
-            do i = 2, level_count
+            col_idx = 0
+            do i = 1, level_count
+                if (i == base_idx) cycle
+                col_idx = col_idx + 1
+                labels(col_idx) = trim(term%name) // ':' // int_to_string(infos(info_index)%levels(i))
+                endog_flags(col_idx) = is_endog
                 do row = 1, n_obs
                     if (int(nint(host%W(row, idx))) == infos(info_index)%levels(i)) then
-                        data(row, i - 1) = 1.0_real64
+                        data(row, col_idx) = 1.0_real64
                     end if
                 end do
-                labels(i - 1) = trim(term%name) // ':' // int_to_string(infos(info_index)%levels(i))
-                endog_flags(i - 1) = is_endog
             end do
         end if
     end subroutine build_factor_block

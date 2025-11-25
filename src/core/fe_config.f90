@@ -6,6 +6,7 @@ module fe_config
     type, public :: fe_formula_term
         character(len=:), allocatable :: name
         logical :: is_categorical = .false.
+        integer(int32) :: base_level = 1
     end type fe_formula_term
 
     type, public :: fe_formula_interaction

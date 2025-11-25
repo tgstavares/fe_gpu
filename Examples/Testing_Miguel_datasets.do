@@ -1,5 +1,5 @@
 clear all
-local HOME "/srv/projetos/P008/02_testing_fe_estimators"
+local HOME "/home/tgst/Desktop/Project_estimator/Project_estimator/Examples"
 cd `HOME'
 
 capture set rmsg on

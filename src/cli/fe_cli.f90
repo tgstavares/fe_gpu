@@ -63,6 +63,11 @@ contains
                 if (idx > argc) call fail_option('--iv-z-cols requires an instrument index list (1-based)')
                 call get_command_argument(idx, value)
                 call append_iv_z_columns(cfg, trim(value))
+            case ('--formula')
+                idx = idx + 1
+                if (idx > argc) call fail_option('--formula requires a formula string')
+                call get_command_argument(idx, value)
+                call parse_formula_string(cfg, trim(value))
             case ('--cpu-only')
                 cfg%use_gpu = .false.
             case ('--gpu')
@@ -92,7 +97,7 @@ contains
         call sort_iv_columns(cfg)
         call sort_iv_z_columns(cfg)
 
-        call log_info('Runtime configuration -> ' // describe_config(cfg))
+        if (cfg%verbose) call log_info('Runtime configuration -> ' // describe_config(cfg))
     end subroutine parse_cli_arguments
 
     subroutine fail_option(message)
@@ -623,6 +628,17 @@ contains
             call extract_parenthesized(tail, pos + 7, block)
             call store_name_list(cfg%cluster_name_targets, block)
         end if
+
+        pos = index(lowered, 'vce(')
+        if (pos > 0) then
+            call extract_parenthesized(tail, pos + 3, block)
+            if (len_trim(block) > 0) then
+                if (index(to_lower(block), 'cluster') == 1) then
+                    block = adjustl(block(8:))
+                    call store_name_list(cfg%cluster_name_targets, block)
+                end if
+            end if
+        end if
     end subroutine parse_formula_options
 
     subroutine process_formula_token(cfg, token)
@@ -707,11 +723,30 @@ contains
     function parse_factor_from_token(text) result(term)
         character(len=*), intent(in) :: text
         type(fe_formula_term) :: term
-        character(len=:), allocatable :: lowered
+        character(len=:), allocatable :: lowered, rest, base_str
+        integer :: dotpos, ios, base_val
+
+        term%is_categorical = .false.
+        term%base_level = 1_int32
+        term%name = ''
+
         lowered = trim(text)
         if (len(lowered) >= 2 .and. lowered(1:2) == 'i.') then
             term%is_categorical = .true.
-            term%name = trim(lowered(3:))
+            rest = trim(lowered(3:))
+            dotpos = index(rest, '.')
+            if (dotpos > 0) then
+                base_str = trim(rest(:dotpos - 1))
+                read(base_str, *, iostat=ios) base_val
+                if (ios == 0 .and. base_val > 0) then
+                    term%base_level = int(base_val, int32)
+                    term%name = trim(rest(dotpos + 1:))
+                else
+                    term%name = rest
+                end if
+            else
+                term%name = rest
+            end if
         else
             term%is_categorical = .false.
             term%name = lowered
@@ -1054,18 +1089,26 @@ contains
         type(fe_runtime_config), intent(inout) :: cfg
         type(fe_dataset_header), intent(inout) :: header
         integer(int32), allocatable :: mapped(:)
+        integer :: i_fb
 
         call apply_fe_name_overrides(cfg, header)
 
         if ((.not. allocated(cfg%cluster_fe_dims)) .or. size(cfg%cluster_fe_dims) == 0) then
-            if (allocated(cfg%cluster_name_targets) .and. allocated(header%fe_names)) then
-                call map_name_list(cfg%cluster_name_targets, header%fe_names, mapped)
-                if (allocated(mapped)) then
-                    if (allocated(cfg%cluster_fe_dims)) deallocate(cfg%cluster_fe_dims)
-                    allocate(cfg%cluster_fe_dims(size(mapped)))
-                    cfg%cluster_fe_dims = mapped
-                end if
+        if (allocated(cfg%cluster_name_targets) .and. allocated(header%fe_names)) then
+            call map_name_list(cfg%cluster_name_targets, header%fe_names, mapped)
+            if (allocated(mapped)) then
+                if (allocated(cfg%cluster_fe_dims)) deallocate(cfg%cluster_fe_dims)
+                allocate(cfg%cluster_fe_dims(size(mapped)))
+                cfg%cluster_fe_dims = mapped
+            else if (size(cfg%cluster_name_targets) > 0 .and. header%n_fe > 0) then
+                ! Fallback: map by position if FE names are unavailable
+                if (allocated(cfg%cluster_fe_dims)) deallocate(cfg%cluster_fe_dims)
+                allocate(cfg%cluster_fe_dims(min(size(cfg%cluster_name_targets), header%n_fe)))
+                do i_fb = 1, size(cfg%cluster_fe_dims)
+                    cfg%cluster_fe_dims(i_fb) = int(i_fb, int32)
+                end do
             end if
+        end if
         end if
 
         if (allocated(cfg%fe_name_targets) .and. size(cfg%fe_name_targets) > 0 .and. &

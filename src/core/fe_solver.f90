@@ -5,6 +5,9 @@ module fe_solver
     private
 
     public :: chol_solve_and_invert
+    public :: set_solver_logging
+
+    logical, save :: log_solver_info = .true.
 
     interface
         subroutine dpotrf(uplo, n, a, lda, info) bind(C, name="dpotrf_")
@@ -54,7 +57,7 @@ contains
         call dpotrs('U', n, 1, Q, n, beta, n, info)
         if (info /= 0) return
 
-        call log_info('Solved normal equations with Cholesky.')
+        if (log_solver_info) call log_info('Solved normal equations with Cholesky.')
 
         Q_inv = Q
         call dpotri('U', n, Q_inv, n, info_inv)
@@ -69,5 +72,10 @@ contains
             end do
         end do
     end subroutine chol_solve_and_invert
+
+    subroutine set_solver_logging(enabled)
+        logical, intent(in) :: enabled
+        log_solver_info = enabled
+    end subroutine set_solver_logging
 
 end module fe_solver

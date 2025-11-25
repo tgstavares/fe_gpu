@@ -9,7 +9,7 @@ module fe_pipeline
         fe_gpu_compute_residual, fe_gpu_dot, fe_gpu_cluster_scores, fe_gpu_cluster_meat, fe_gpu_cross_product, fe_gpu_matmul
     use fe_gpu_runtime, only: fe_device_buffer, fe_device_alloc, fe_device_free, fe_memcpy_dtoh, fe_memcpy_htod, &
         fe_device_memset, fe_gpu_copy_columns, fe_gpu_build_multi_cluster_ids, fe_gpu_last_error, fe_gpu_clear_error
-    use fe_solver, only: chol_solve_and_invert
+    use fe_solver, only: chol_solve_and_invert, set_solver_logging
     use fe_logging, only: log_warn, log_info
     use fe_cluster_utils, only: build_cluster_ids
     use omp_lib, only: omp_get_num_threads, omp_get_thread_num, omp_get_max_threads
@@ -322,6 +322,7 @@ contains
         if (allocated(result%depvar_name)) deallocate(result%depvar_name)
         if (allocated(result%cluster_labels)) deallocate(result%cluster_labels)
         if (allocated(result%iv_labels)) deallocate(result%iv_labels)
+        call set_solver_logging(cfg%verbose)
         if (allocated(header%depvar_name)) then
             if (len_trim(header%depvar_name) > 0) then
                 allocate(character(len=len_trim(header%depvar_name)) :: result%depvar_name)

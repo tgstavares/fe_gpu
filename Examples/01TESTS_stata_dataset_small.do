@@ -1,5 +1,5 @@
 clear all
-local HOME "/home/tgst/Desktop/Project_estimator/Project_estimator/tests_stata"
+local HOME "/home/tgst/Desktop/Project_estimator/Project_estimator/Examples"
 cd `HOME'
 
 
@@ -26,8 +26,9 @@ capture set rmsg on
 capture quietly log using "REGS_01_stata.txt", text replace
 reghdfe ln_wage hours ttl_exp union tenure wks_ue, absorb(idcode occ_code year)
 reghdfe ln_wage hours ttl_exp union tenure wks_ue, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
-reghdfe ln_wage hours ttl_exp union tenure wks_ue c.tenure#c.wks_ue i.ind_code##i.msp , absorb(idcode occ_code year) vce(cluster idcode occ_code year)
-ivreghdfe ln_wage (hours = wks_work) ttl_exp union tenure wks_ue, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
-ivreghdfe ln_wage (hours i.msp = wks_work i.ind_code) ttl_exp union tenure wks_ue, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
+reghdfe ln_wage hours ttl_exp union tenure wks_ue i.ind_code##i.msp c.tenure#c.wks_ue, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
+ivreghdfe ln_wage (hours = wks_work) ttl_exp union tenure wks_ue, absorb(idcode occ_code year) vce(cluster idcode occ_code)
+ivreghdfe ln_wage (hours = wks_work) ttl_exp union tenure wks_ue i.ind_code##i.msp, absorb(idcode occ_code year) vce(cluster idcode)
+ivreghdfe ln_wage (hours i.msp = wks_work i.ind_code) ttl_exp union tenure wks_ue, absorb(idcode occ_code year) vce(cluster idcode occ_code)
 capture quietly log close
 capture set rmsg off

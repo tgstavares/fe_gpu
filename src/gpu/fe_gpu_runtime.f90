@@ -38,6 +38,8 @@ module fe_gpu_runtime
         integer(int64) :: size_bytes = 0_int64
     end type fe_device_buffer
 
+    logical, save :: log_gpu_info = .true.
+
     public :: fe_gpu_initialize
     public :: fe_gpu_finalize
     public :: fe_device_alloc
@@ -52,6 +54,7 @@ module fe_gpu_runtime
     public :: fe_gpu_build_multi_cluster_ids
     public :: fe_gpu_last_error
     public :: fe_gpu_clear_error
+    public :: fe_gpu_set_logging
 
     interface
         function c_fe_gpu_runtime_is_available() bind(C, name="fe_gpu_runtime_is_available") result(flag)
@@ -180,7 +183,7 @@ contains
         ctx%initialized = .true.
         ctx%device_id = info_c%device_id
         ctx%info = map_device_info(info_c)
-        call log_info('Initialized GPU device: ' // trim(ctx%info%name))
+        if (log_gpu_info) call log_info('Initialized GPU device: ' // trim(ctx%info%name))
     end subroutine fe_gpu_initialize
 
     subroutine fe_gpu_finalize(ctx)
@@ -194,6 +197,11 @@ contains
         ctx%initialized = .false.
         ctx%device_id = -1
     end subroutine fe_gpu_finalize
+
+    subroutine fe_gpu_set_logging(enabled)
+        logical, intent(in) :: enabled
+        log_gpu_info = enabled
+    end subroutine fe_gpu_set_logging
 
     subroutine fe_device_alloc(buffer, nbytes)
         type(fe_device_buffer), intent(inout) :: buffer
