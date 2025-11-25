@@ -520,8 +520,7 @@ contains
 
         call system_clock(count=it0)
         if (info == 0) then
-            allow_gpu_cluster_builder = cfg%fast_mode .and. cfg%use_gpu .and. &
-                .not. (cfg%use_formula_design .and. cfg%formula_has_categorical)
+            allow_gpu_cluster_builder = cfg%fast_mode .and. cfg%use_gpu
             call compute_standard_errors(keep_idx, Q_inv_kept, host, group_sizes, cfg%verbose)
             call finalize_regression_stats(result, gpu_data%n_obs, header%n_fe > 0)
         else

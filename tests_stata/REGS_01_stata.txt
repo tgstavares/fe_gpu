@@ -1,4 +1,4 @@
-r; t=0.00 15:49:56
+r; t=0.00 11:02:45
 
 . reghdfe ln_wage hours ttl_exp union tenure wks_ue, absorb(idcode occ_code year)
 (MWFE estimator converged in 18 iterations)
@@ -31,7 +31,7 @@ Absorbed degrees of freedom:
         year |        12           1          11    ?|
 -----------------------------------------------------+
 ? = number of redundant parameters may be higher
-r; t=0.55 15:49:56
+r; t=0.46 11:02:45
 
 . reghdfe ln_wage hours ttl_exp union tenure wks_ue, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
 (MWFE estimator converged in 18 iterations)
@@ -67,7 +67,7 @@ Absorbed degrees of freedom:
         year |        12          12           0    *|
 -----------------------------------------------------+
 * = FE nested within cluster; treated as redundant for DoF computation
-r; t=0.30 15:49:56
+r; t=0.29 11:02:45
 
 . reghdfe ln_wage hours ttl_exp union tenure wks_ue c.tenure#c.wks_ue i.ind_code##i.msp , absorb(idcode occ_code year) vce(cluster idcode occ_code year)
 (MWFE estimator converged in 18 iterations)
@@ -135,7 +135,7 @@ Absorbed degrees of freedom:
         year |        12          12           0    *|
 -----------------------------------------------------+
 * = FE nested within cluster; treated as redundant for DoF computation
-r; t=1.39 15:49:58
+r; t=4.47 11:02:50
 
 . ivreghdfe ln_wage (hours = wks_work) ttl_exp union tenure wks_ue, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
 (MWFE estimator converged in 18 iterations)
@@ -196,7 +196,7 @@ Absorbed degrees of freedom:
         year |        12          12           0    *|
 -----------------------------------------------------+
 * = FE nested within cluster; treated as redundant for DoF computation
-r; t=0.83 15:49:59
+r; t=0.85 11:02:51
 
 . ivreghdfe ln_wage (hours i.msp = wks_work i.ind_code) ttl_exp union tenure wks_ue, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
 (MWFE estimator converged in 18 iterations)
@@ -273,6 +273,6 @@ Absorbed degrees of freedom:
         year |        12          12           0    *|
 -----------------------------------------------------+
 * = FE nested within cluster; treated as redundant for DoF computation
-r; t=4.08 15:50:03
+r; t=2.63 11:02:53
 
 . capture quietly log close
