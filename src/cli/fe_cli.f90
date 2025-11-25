@@ -476,6 +476,10 @@ contains
         call clear_name_array(cfg%cluster_name_targets)
         call clear_name_array(cfg%fe_name_targets)
         call clear_name_array(cfg%regressor_name_targets)
+        if (allocated(cfg%iv_regressor_terms)) deallocate(cfg%iv_regressor_terms)
+        allocate(cfg%iv_regressor_terms(0))
+        if (allocated(cfg%iv_instrument_terms)) deallocate(cfg%iv_instrument_terms)
+        allocate(cfg%iv_instrument_terms(0))
         if (allocated(cfg%formula_terms)) deallocate(cfg%formula_terms)
         allocate(cfg%formula_terms(0))
         if (allocated(cfg%formula_interactions)) deallocate(cfg%formula_interactions)
@@ -572,6 +576,7 @@ contains
         integer :: tilde_pos
         character(len=:), allocatable :: tokens(:)
         integer :: i
+        type(fe_formula_term) :: term
 
         block = trim(text)
         tilde_pos = index(block, '~')
@@ -584,13 +589,17 @@ contains
 
         call split_whitespace(lhs, tokens)
         do i = 1, size(tokens)
-            call append_name(cfg%iv_regressor_names, tokens(i))
+            term = parse_factor_from_token(tokens(i))
+            call append_name(cfg%iv_regressor_names, trim(term%name))
+            call append_formula_term(cfg%iv_regressor_terms, term)
         end do
         if (allocated(tokens)) deallocate(tokens)
 
         call split_whitespace(rhs, tokens)
         do i = 1, size(tokens)
-            call append_name(cfg%iv_instrument_names, tokens(i))
+            term = parse_factor_from_token(tokens(i))
+            call append_name(cfg%iv_instrument_names, trim(term%name))
+            call append_formula_term(cfg%iv_instrument_terms, term)
         end do
         if (allocated(tokens)) deallocate(tokens)
     end subroutine parse_iv_block
@@ -708,6 +717,32 @@ contains
             term%name = lowered
         end if
     end function parse_factor_from_token
+
+    subroutine append_formula_term(list, term)
+        type(fe_formula_term), allocatable, intent(inout) :: list(:)
+        type(fe_formula_term), intent(in) :: term
+        type(fe_formula_term), allocatable :: tmp(:)
+        integer :: i, n
+        character(len=:), allocatable :: lower
+        lower = to_lower(trim(term%name))
+        if (.not. allocated(list)) then
+            allocate(list(1))
+            list(1) = term
+            return
+        end if
+        n = size(list)
+        do i = 1, n
+            if (to_lower(trim(list(i)%name)) == lower) then
+                ! Upgrade to categorical if any occurrence requests it
+                list(i)%is_categorical = list(i)%is_categorical .or. term%is_categorical
+                return
+            end if
+        end do
+        allocate(tmp(n + 1))
+        tmp(1:n) = list
+        tmp(n + 1) = term
+        call move_alloc(tmp, list)
+    end subroutine append_formula_term
 
     subroutine add_formula_main_term(cfg, term)
         type(fe_runtime_config), intent(inout) :: cfg

@@ -7,7 +7,7 @@ DIRPROGS="/home/tgst/Desktop/Project_estimator/Project_estimator"
 $DIRPROGS/tools/dataframe_to_fe_binary.py nlsw_test.parquet \
     --output nlsw_test.bin \
     --y ln_wage \
-    --x hours,ttl_exp,union,tenure,wks_ue,msp \
+    --x hours,ttl_exp,union,tenure,wks_ue,msp,ind_code \
     --iv wks_work,ind_code \
     --fe idcode,occ_code,year \
     --drop-missing --summary --verbose --workers 16 

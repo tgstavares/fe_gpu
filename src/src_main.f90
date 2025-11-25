@@ -27,6 +27,7 @@ program fe_gpu_main
         logical :: needs_levels = .false.
         integer, allocatable :: levels(:)
         logical :: valid = .false.
+        logical :: is_instrument = .false.
     end type variable_info_entry
     type(fe_runtime_config) :: cfg
     type(fe_dataset_header) :: header
@@ -587,10 +588,14 @@ contains
         type(fe_dataset_header), intent(inout) :: header
         type(fe_host_arrays), intent(inout) :: host
         type(variable_info_entry), allocatable :: var_infos(:)
+        type(variable_info_entry), allocatable :: inst_infos(:)
         real(real64), allocatable :: design(:, :)
+        real(real64), allocatable :: inst_design(:, :)
         character(len=:), allocatable :: names(:)
+        character(len=:), allocatable :: inst_names(:)
         logical, allocatable :: endog_flags(:)
         integer :: total_cols, col_ptr, max_len, count_iv
+        integer :: total_inst, col_inst, max_len_inst
         integer :: i
         integer(int32), allocatable :: iv_idx(:)
         integer :: n_obs
@@ -675,6 +680,50 @@ contains
         if (allocated(iv_idx)) deallocate(iv_idx)
         deallocate(names)
         deallocate(endog_flags)
+
+        ! Build instrument design (factor-aware) if IV instruments were specified
+        if (size(cfg%iv_instrument_terms) > 0) then
+            call collect_variable_info_instruments(cfg, header, host, inst_infos)
+            if (.not. allocated(inst_infos) .or. size(inst_infos) == 0) then
+                call log_warn('IV instrument list is empty after mapping; skipping instrument expansion.')
+            else
+                total_inst = 0
+                do i = 1, size(cfg%iv_instrument_terms)
+                    total_inst = total_inst + count_columns_for_term(cfg%iv_instrument_terms(i), inst_infos)
+                end do
+                if (total_inst > 0) then
+                    allocate(inst_design(n_obs, total_inst))
+                    allocate(character(len=NAME_BUFFER_LEN) :: inst_names(total_inst))
+                    inst_design = 0.0_real64
+                    inst_names = ''
+                    col_inst = 0
+                    max_len_inst = 0
+                    do i = 1, size(cfg%iv_instrument_terms)
+                        call append_instrument_term_columns(cfg%iv_instrument_terms(i), inst_infos, host%Z, inst_design, &
+     &                      inst_names, col_inst, max_len_inst)
+                    end do
+                    if (col_inst < total_inst) then
+                        call shrink_matrix_simple(inst_design, inst_names, col_inst)
+                        total_inst = col_inst
+                    end if
+                    call move_alloc(inst_design, host%Z)
+                    header%n_instruments = total_inst
+                    if (allocated(header%instrument_names)) deallocate(header%instrument_names)
+                    max_len_inst = max(1, max_len_inst)
+                    allocate(character(len=max_len_inst) :: header%instrument_names(total_inst))
+                    do i = 1, total_inst
+                        header%instrument_names(i) = ''
+                        if (len_trim(inst_names(i)) > 0) header%instrument_names(i)(1:len_trim(inst_names(i))) = trim(inst_names(i))
+                    end do
+                    if (allocated(cfg%iv_instrument_cols)) deallocate(cfg%iv_instrument_cols)
+                    allocate(cfg%iv_instrument_cols(total_inst))
+                    cfg%iv_instrument_cols = [(int(i, int32), i = 1, total_inst)]
+                    deallocate(inst_names)
+                else
+                    call log_warn('IV instrument expansion produced no columns; skipping.')
+                end if
+            end if
+        end if
     end subroutine build_formula_design_matrix
 
     subroutine shrink_matrix(mat, names, flags, new_cols)
@@ -707,6 +756,30 @@ contains
         new_flags = flags(1:new_cols)
         call move_alloc(new_flags, flags)
     end subroutine shrink_matrix
+
+    subroutine shrink_matrix_simple(mat, names, new_cols)
+        real(real64), allocatable, intent(inout) :: mat(:, :)
+        character(len=:), allocatable, intent(inout) :: names(:)
+        integer, intent(in) :: new_cols
+        real(real64), allocatable :: tmp(:, :)
+        character(len=:), allocatable :: new_names(:)
+        integer :: name_len
+        if (new_cols <= 0) then
+            deallocate(mat)
+            allocate(mat(0, 0))
+            deallocate(names)
+            allocate(character(len=NAME_BUFFER_LEN) :: names(0))
+            return
+        end if
+        if (size(mat, 2) == new_cols) return
+        allocate(tmp(size(mat, 1), new_cols))
+        tmp = mat(:, 1:new_cols)
+        call move_alloc(tmp, mat)
+        name_len = len(names(1))
+        allocate(character(len=name_len) :: new_names(new_cols))
+        new_names = names(1:new_cols)
+        call move_alloc(new_names, names)
+    end subroutine shrink_matrix_simple
 
     subroutine finalize_iv_indices(cfg, indices)
         type(fe_runtime_config), intent(inout) :: cfg
@@ -793,13 +866,17 @@ contains
         do i = 1, count_names
             infos(i)%name = names(i)
             infos(i)%needs_levels = need_cat(i)
-            infos(i)%column_index = find_regressor_index(header, names(i))
+            call find_variable_index(header, names(i), infos(i)%column_index, infos(i)%is_instrument)
             if (infos(i)%column_index <= 0) then
                 call log_warn('Variable "' // trim(names(i)) // '" not found in dataset; dropping.')
                 cycle
             end if
             if (infos(i)%needs_levels) then
-                call collect_levels_for_column(host%W(:, infos(i)%column_index), infos(i)%name, infos(i)%levels)
+                if (infos(i)%is_instrument) then
+                    call collect_levels_for_column(host%Z(:, infos(i)%column_index), infos(i)%name, infos(i)%levels)
+                else
+                    call collect_levels_for_column(host%W(:, infos(i)%column_index), infos(i)%name, infos(i)%levels)
+                end if
                 if (size(infos(i)%levels) <= 1) then
                     call log_warn('Categorical variable "' // trim(names(i)) // '" has <=1 level; skipping dummy expansion.')
                     infos(i)%needs_levels = .false.
@@ -808,6 +885,45 @@ contains
             infos(i)%valid = .true.
         end do
     end subroutine collect_variable_info
+
+    subroutine collect_variable_info_instruments(cfg, header, host, infos)
+        type(fe_runtime_config), intent(in) :: cfg
+        type(fe_dataset_header), intent(in) :: header
+        type(fe_host_arrays), intent(in) :: host
+        type(variable_info_entry), allocatable, intent(out) :: infos(:)
+        character(len=:), allocatable :: names(:)
+        logical, allocatable :: need_cat(:)
+        integer :: i
+        if (header%n_instruments <= 0 .or. .not. allocated(host%Z)) then
+            allocate(infos(0))
+            return
+        end if
+
+        call gather_iv_factor_names(cfg, names, need_cat)
+        if (.not. allocated(names)) then
+            allocate(infos(0))
+            return
+        end if
+        allocate(infos(size(names)))
+        do i = 1, size(names)
+            infos(i)%name = names(i)
+            infos(i)%needs_levels = need_cat(i)
+            call find_instrument_index(header, names(i), infos(i)%column_index)
+            infos(i)%is_instrument = .true.
+            if (infos(i)%column_index <= 0) then
+                call log_warn('Instrument "' // trim(names(i)) // '" not found in dataset; dropping.')
+                cycle
+            end if
+            if (infos(i)%needs_levels) then
+                call collect_levels_for_column(host%Z(:, infos(i)%column_index), infos(i)%name, infos(i)%levels)
+                if (size(infos(i)%levels) <= 1) then
+                    call log_warn('Categorical instrument "' // trim(names(i)) // '" has <=1 level; skipping dummy expansion.')
+                    infos(i)%needs_levels = .false.
+                end if
+            end if
+            infos(i)%valid = .true.
+        end do
+    end subroutine collect_variable_info_instruments
 
     subroutine gather_factor_names(cfg, names, need_cat)
         type(fe_runtime_config), intent(in) :: cfg
@@ -837,6 +953,28 @@ contains
         call move_alloc(temp, names)
         call move_alloc(temp_cat, need_cat)
     end subroutine gather_factor_names
+
+    subroutine gather_iv_factor_names(cfg, names, need_cat)
+        type(fe_runtime_config), intent(in) :: cfg
+        character(len=:), allocatable, intent(out) :: names(:)
+        logical, allocatable, intent(out) :: need_cat(:)
+        character(len=:), allocatable :: temp(:)
+        logical, allocatable :: temp_cat(:)
+        integer :: i
+        if (allocated(temp)) deallocate(temp)
+        if (allocated(temp_cat)) deallocate(temp_cat)
+        do i = 1, size(cfg%iv_instrument_terms)
+            call append_factor_name(temp, temp_cat, cfg%iv_instrument_terms(i)%name, cfg%iv_instrument_terms(i)%is_categorical)
+        end do
+        if (.not. allocated(temp)) then
+            allocate(character(len=1) :: temp(0))
+        end if
+        if (.not. allocated(temp_cat)) then
+            allocate(temp_cat(0))
+        end if
+        call move_alloc(temp, names)
+        call move_alloc(temp_cat, need_cat)
+    end subroutine gather_iv_factor_names
 
     subroutine append_factor_name(list, cat_flags, name, is_cat)
         character(len=:), allocatable, intent(inout) :: list(:)
@@ -930,14 +1068,45 @@ contains
         end do
     end function find_regressor_index
 
+    subroutine find_variable_index(header, name, idx, is_instr)
+        type(fe_dataset_header), intent(in) :: header
+        character(len=*), intent(in) :: name
+        integer, intent(out) :: idx
+        logical, intent(out) :: is_instr
+        idx = find_regressor_index(header, name)
+        is_instr = .false.
+        if (idx <= 0) then
+            call find_instrument_index(header, name, idx)
+            if (idx > 0) is_instr = .true.
+        end if
+    end subroutine find_variable_index
+
+    subroutine find_instrument_index(header, name, idx)
+        type(fe_dataset_header), intent(in) :: header
+        character(len=*), intent(in) :: name
+        integer, intent(out) :: idx
+        integer :: i
+        if (.not. allocated(header%instrument_names)) then
+            idx = 0
+            return
+        end if
+        idx = 0
+        do i = 1, size(header%instrument_names)
+            if (to_lower(trim(header%instrument_names(i))) == to_lower(trim(name))) then
+                idx = i
+                return
+            end if
+        end do
+    end subroutine find_instrument_index
+
     logical function is_endogenous_variable(cfg, name) result(flag)
         type(fe_runtime_config), intent(in) :: cfg
         character(len=*), intent(in) :: name
         integer :: i
         flag = .false.
-        if (.not. allocated(cfg%iv_regressor_names)) return
-        do i = 1, size(cfg%iv_regressor_names)
-            if (to_lower(trim(cfg%iv_regressor_names(i))) == to_lower(trim(name))) then
+        if (.not. allocated(cfg%iv_regressor_terms)) return
+        do i = 1, size(cfg%iv_regressor_terms)
+            if (to_lower(trim(cfg%iv_regressor_terms(i)%name)) == to_lower(trim(name))) then
                 flag = .true.
                 return
             end if
@@ -993,6 +1162,47 @@ contains
             end do
         end if
     end subroutine append_main_term_columns
+
+    subroutine append_instrument_term_columns(term, infos, data_matrix, design, names, col_ptr, max_len)
+        type(fe_formula_term), intent(in) :: term
+        type(variable_info_entry), intent(in) :: infos(:)
+        real(real64), intent(in) :: data_matrix(:, :)
+        real(real64), intent(inout) :: design(:, :)
+        character(len=:), allocatable, intent(inout) :: names(:)
+        integer, intent(inout) :: col_ptr
+        integer, intent(inout) :: max_len
+        integer :: info_index, idx, level_count, i, row, level
+
+        info_index = find_variable_info(infos, term%name)
+        if (info_index <= 0) return
+        if (.not. infos(info_index)%valid) return
+        idx = infos(info_index)%column_index
+
+        if (.not. term%is_categorical) then
+            col_ptr = col_ptr + 1
+            if (col_ptr > size(design, 2)) return
+            design(:, col_ptr) = data_matrix(:, idx)
+            names(col_ptr) = trim(term%name)
+            max_len = max(max_len, len_trim(names(col_ptr)))
+        else
+            if (.not. allocated(infos(info_index)%levels)) return
+            level_count = size(infos(info_index)%levels)
+            if (level_count <= 1) return
+            do i = 2, level_count
+                col_ptr = col_ptr + 1
+                if (col_ptr > size(design, 2)) return
+                design(:, col_ptr) = 0.0_real64
+                level = infos(info_index)%levels(i)
+                do row = 1, size(data_matrix, 1)
+                    if (int(nint(data_matrix(row, idx))) == level) then
+                        design(row, col_ptr) = 1.0_real64
+                    end if
+                end do
+                names(col_ptr) = trim(term%name) // ':' // int_to_string(level)
+                max_len = max(max_len, len_trim(names(col_ptr)))
+            end do
+        end if
+    end subroutine append_instrument_term_columns
 
     subroutine append_interaction_columns(cfg, header, host, interaction, infos, design, names, endog_flags, col_ptr, max_len)
         type(fe_runtime_config), intent(in) :: cfg

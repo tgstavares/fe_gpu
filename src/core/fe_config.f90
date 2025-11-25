@@ -38,6 +38,8 @@ module fe_config
         logical :: formula_has_categorical = .false.
         type(fe_formula_term), allocatable :: formula_terms(:)
         type(fe_formula_interaction), allocatable :: formula_interactions(:)
+        type(fe_formula_term), allocatable :: iv_regressor_terms(:)
+        type(fe_formula_term), allocatable :: iv_instrument_terms(:)
     end type fe_runtime_config
 
     public :: init_default_config
@@ -64,6 +66,8 @@ contains
         allocate(cfg%fe_selection(0))
         allocate(cfg%formula_terms(0))
         allocate(cfg%formula_interactions(0))
+        allocate(cfg%iv_regressor_terms(0))
+        allocate(cfg%iv_instrument_terms(0))
         cfg%use_formula_design = .false.
         cfg%formula_has_categorical = .false.
     end subroutine init_default_config
