@@ -7,7 +7,7 @@ capture set rmsg on
 pq use using "../_LIXO/nlswork_5M.parquet", clear
 *pq use using "../_LIXO/nlswork_116M.parquet", clear
 
-reghdfe ln_wage age agesq union, absorb(id occupation year) tolerance(1e-8)
+reghdfe ln_wage age agesq union, absorb(id occupation year)
 *reghdfejl ln_wage age agesq union, absorb(id occupation year)
 
 capture set rmsg off

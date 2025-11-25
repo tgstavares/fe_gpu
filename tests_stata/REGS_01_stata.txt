@@ -1,13 +1,278 @@
-r; t=0.00 11:35:33
+r; t=0.00 15:49:56
 
-. 
-. *reghdfe   ln_wage  hours                           ttl_exp union, absorb(idcode occ_code year
-> ) vce(cluster idcode occ_code year)
-. *ivreghdfe ln_wage (hours          = tenure)        ttl_exp union, absorb(idcode occ_code year
-> ) vce(cluster idcode occ_code year)
-. *ivreghdfe ln_wage (hours wks_work = tenure wks_ue) ttl_exp union, absorb(idcode occ_code year
-> ) vce(cluster idcode occ_code year)
-. *reghdfe ln_wage hours wks_work ttl_exp union c.ttl_exp#c.union i.ind_code##i.msp, absorb(idco
-> de occ_code year) vce(cluster idcode occ_code year)
-. 
+. reghdfe ln_wage hours ttl_exp union tenure wks_ue, absorb(idcode occ_code year)
+(MWFE estimator converged in 18 iterations)
+
+HDFE Linear regression                            Number of obs   =     26,912
+Absorbing 3 HDFE groups                           F(   5,  22896) =     390.91
+                                                  Prob > F        =     0.0000
+                                                  R-squared       =     0.7844
+                                                  Adj R-squared   =     0.7466
+                                                  Within R-sq.    =     0.0787
+                                                  Root MSE        =     0.2313
+
+------------------------------------------------------------------------------
+     ln_wage | Coefficient  Std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+       hours |  -.0030408   .0002254   -13.49   0.000    -.0034825   -.0025991
+     ttl_exp |   .0335883   .0014491    23.18   0.000     .0307479    .0364286
+       union |   .1222054   .0056549    21.61   0.000     .1111214    .1332894
+      tenure |   .0098533   .0007783    12.66   0.000     .0083277    .0113789
+      wks_ue |  -.0004487   .0002716    -1.65   0.099    -.0009811    .0000836
+       _cons |   1.535136   .0114003   134.66   0.000     1.512791    1.557481
+------------------------------------------------------------------------------
+
+Absorbed degrees of freedom:
+-----------------------------------------------------+
+ Absorbed FE | Categories  - Redundant  = Num. Coefs |
+-------------+---------------------------------------|
+      idcode |      3988           0        3988     |
+    occ_code |        13           1          12     |
+        year |        12           1          11    ?|
+-----------------------------------------------------+
+? = number of redundant parameters may be higher
+r; t=0.55 15:49:56
+
+. reghdfe ln_wage hours ttl_exp union tenure wks_ue, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
+(MWFE estimator converged in 18 iterations)
+Warning: VCV matrix was non-positive semi-definite; adjustment from Cameron, Gelbach & Miller applied.
+
+HDFE Linear regression                            Number of obs   =     26,912
+Absorbing 3 HDFE groups                           F(   5,     11) =     158.17
+Statistics robust to heteroskedasticity           Prob > F        =     0.0000
+                                                  R-squared       =     0.7844
+Number of clusters (idcode)  =      3,988         Adj R-squared   =     0.7466
+Number of clusters (occ_code) =         13        Within R-sq.    =     0.0787
+Number of clusters (year)    =         12         Root MSE        =     0.2313
+
+                  (Std. err. adjusted for 12 clusters in idcode occ_code year)
+------------------------------------------------------------------------------
+             |               Robust
+     ln_wage | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+       hours |  -.0030408   .0012235    -2.49   0.030    -.0057337    -.000348
+     ttl_exp |   .0335883   .0049437     6.79   0.000     .0227072    .0444694
+       union |   .1222054   .0211191     5.79   0.000     .0757226    .1686882
+      tenure |   .0098533   .0030547     3.23   0.008       .00313    .0165766
+      wks_ue |  -.0004487   .0009257    -0.48   0.637    -.0024862    .0015887
+       _cons |   1.535136   .0440391    34.86   0.000     1.438207    1.632065
+------------------------------------------------------------------------------
+
+Absorbed degrees of freedom:
+-----------------------------------------------------+
+ Absorbed FE | Categories  - Redundant  = Num. Coefs |
+-------------+---------------------------------------|
+      idcode |      3988        3988           0    *|
+    occ_code |        13          13           0    *|
+        year |        12          12           0    *|
+-----------------------------------------------------+
+* = FE nested within cluster; treated as redundant for DoF computation
+r; t=0.30 15:49:56
+
+. reghdfe ln_wage hours ttl_exp union tenure wks_ue c.tenure#c.wks_ue i.ind_code##i.msp , absorb(idcode occ_code year) vce(cluster idcode occ_code year)
+(MWFE estimator converged in 18 iterations)
+Warning: VCV matrix was non-positive semi-definite; adjustment from Cameron, Gelbach & Miller applied.
+warning: missing F statistic; dropped variables due to collinearity or too few clusters
+
+HDFE Linear regression                            Number of obs   =     26,912
+Absorbing 3 HDFE groups                           F(  29,     11) =          .
+Statistics robust to heteroskedasticity           Prob > F        =          .
+                                                  R-squared       =     0.7898
+Number of clusters (idcode)  =      3,988         Adj R-squared   =     0.7527
+Number of clusters (occ_code) =         13        Within R-sq.    =     0.1017
+Number of clusters (year)    =         12         Root MSE        =     0.2285
+
+                       (Std. err. adjusted for 12 clusters in idcode occ_code year)
+-----------------------------------------------------------------------------------
+                  |               Robust
+          ln_wage | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+------------------+----------------------------------------------------------------
+            hours |  -.0034952   .0011106    -3.15   0.009    -.0059397   -.0010507
+          ttl_exp |   .0322647   .0049882     6.47   0.000     .0212858    .0432436
+            union |   .1113325   .0223407     4.98   0.000      .062161    .1605039
+           tenure |   .0095613   .0028727     3.33   0.007     .0032387     .015884
+           wks_ue |  -.0005249   .0009531    -0.55   0.593    -.0026226    .0015727
+                  |
+c.tenure#c.wks_ue |   .0001095   .0001298     0.84   0.417    -.0001763    .0003953
+                  |
+         ind_code |
+               2  |  -.0056317   .1271446    -0.04   0.965    -.2854752    .2742118
+               3  |   .0992696   .0923743     1.07   0.306    -.1040449    .3025841
+               4  |   .1318199   .0882391     1.49   0.163     -.062393    .3260327
+               5  |   .1749404   .0710112     2.46   0.031     .0186457    .3312351
+               6  |  -.0431119   .0810939    -0.53   0.606    -.2215985    .1353746
+               7  |   .0601826   .0703666     0.86   0.411    -.0946933    .2150586
+               8  |  -.0612988   .0794514    -0.77   0.457    -.2361703    .1135726
+               9  |  -.0177747   .0728846    -0.24   0.812    -.1781927    .1426433
+              10  |    .044648   .1202731     0.37   0.718    -.2200713    .3093673
+              11  |    .021696   .0794217     0.27   0.790    -.1531101     .196502
+              12  |   .1122501   .0818179     1.37   0.197    -.0678299    .2923301
+                  |
+            1.msp |  -.0208525   .0875025    -0.24   0.816    -.2134441    .1717391
+                  |
+     ind_code#msp |
+             2 1  |   .2135335   .1070589     1.99   0.071    -.0221015    .4491685
+             3 1  |   .0434557   .0867729     0.50   0.626    -.1475302    .2344416
+             4 1  |  -.0012809   .0950936    -0.01   0.989    -.2105805    .2080186
+             5 1  |   .0240367   .0978294     0.25   0.810    -.1912844    .2393579
+             6 1  |   .0201913   .0883336     0.23   0.823    -.1742298    .2146123
+             7 1  |   .0090157   .0796404     0.11   0.912    -.1662717    .1843032
+             8 1  |   .0909618   .0884552     1.03   0.326    -.1037268    .2856504
+             9 1  |  -.0144167   .0985433    -0.15   0.886    -.2313091    .2024757
+            10 1  |   .0760182   .1222623     0.62   0.547    -.1930794    .3451158
+            11 1  |  -.0047099   .0926952    -0.05   0.960    -.2087307    .1993109
+            12 1  |   .0301906   .1025552     0.29   0.774    -.1955319    .2559132
+                  |
+            _cons |   1.524653   .0889851    17.13   0.000     1.328798    1.720508
+-----------------------------------------------------------------------------------
+
+Absorbed degrees of freedom:
+-----------------------------------------------------+
+ Absorbed FE | Categories  - Redundant  = Num. Coefs |
+-------------+---------------------------------------|
+      idcode |      3988        3988           0    *|
+    occ_code |        13          13           0    *|
+        year |        12          12           0    *|
+-----------------------------------------------------+
+* = FE nested within cluster; treated as redundant for DoF computation
+r; t=1.39 15:49:58
+
+. ivreghdfe ln_wage (hours = wks_work) ttl_exp union tenure wks_ue, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
+(MWFE estimator converged in 18 iterations)
+
+IV (2SLS) estimation
+--------------------
+
+Estimates efficient for homoskedasticity only
+Statistics robust to heteroskedasticity and clustering on idcode and occ_code
+
+Number of clusters (idcode) =     3988                Number of obs =    26912
+Number of clusters (occ_code) =     13                F(  5,    12) =    61.83
+                                                      Prob > F      =   0.0000
+Total (centered) SS     =    1329.3597                Centered R2   =  -0.5210
+Total (uncentered) SS   =    1329.3597                Uncentered R2 =  -0.5210
+Residual SS             =    2021.9671                Root MSE      =    .2741
+
+------------------------------------------------------------------------------
+             |               Robust
+     ln_wage | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+       hours |    .024469   .0048951     5.00   0.000     .0138036    .0351344
+     ttl_exp |   .0179421   .0047834     3.75   0.003       .00752    .0283641
+       union |   .0828725   .0222916     3.72   0.003     .0343034    .1314416
+      tenure |   .0066139     .00199     3.32   0.006     .0022781    .0109497
+      wks_ue |  -.0001633   .0012091    -0.14   0.895    -.0027977    .0024711
+------------------------------------------------------------------------------
+Underidentification test (Kleibergen-Paap rk LM statistic):              4.184
+                                                   Chi-sq(1) P-val =    0.0408
+------------------------------------------------------------------------------
+Weak identification test (Cragg-Donald Wald F statistic):              367.329
+                         (Kleibergen-Paap rk Wald F statistic):         34.252
+Stock-Yogo weak ID test critical values: 10% maximal IV size             16.38
+                                         15% maximal IV size              8.96
+                                         20% maximal IV size              6.66
+                                         25% maximal IV size              5.53
+Source: Stock-Yogo (2005).  Reproduced by permission.
+NB: Critical values are for Cragg-Donald F statistic and i.i.d. errors.
+------------------------------------------------------------------------------
+Hansen J statistic (overidentification test of all instruments):         0.000
+                                                 (equation exactly identified)
+------------------------------------------------------------------------------
+Instrumented:         hours
+Included instruments: ttl_exp union tenure wks_ue
+Excluded instruments: wks_work
+Partialled-out:       _cons
+                      nb: total SS, model F and R2s are after partialling-out;
+                          any small-sample adjustments include partialled-out
+                          variables in regressor count K
+------------------------------------------------------------------------------
+
+Absorbed degrees of freedom:
+-----------------------------------------------------+
+ Absorbed FE | Categories  - Redundant  = Num. Coefs |
+-------------+---------------------------------------|
+      idcode |      3988        3988           0    *|
+    occ_code |        13          13           0    *|
+        year |        12          12           0    *|
+-----------------------------------------------------+
+* = FE nested within cluster; treated as redundant for DoF computation
+r; t=0.83 15:49:59
+
+. ivreghdfe ln_wage (hours i.msp = wks_work i.ind_code) ttl_exp union tenure wks_ue, absorb(idcode occ_code year) vce(cluster idcode occ_code year)
+(MWFE estimator converged in 18 iterations)
+
+IV (2SLS) estimation
+--------------------
+
+Estimates efficient for homoskedasticity only
+Statistics robust to heteroskedasticity and clustering on idcode and occ_code
+
+Number of clusters (idcode) =     3988                Number of obs =    26912
+Number of clusters (occ_code) =     13                F(  6,    12) =    51.58
+                                                      Prob > F      =   0.0000
+Total (centered) SS     =    1329.3597                Centered R2   =  -0.7230
+Total (uncentered) SS   =    1329.3597                Uncentered R2 =  -0.7230
+Residual SS             =  2290.499696                Root MSE      =    .2918
+
+------------------------------------------------------------------------------
+             |               Robust
+     ln_wage | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+       hours |   .0279732   .0062536     4.47   0.001     .0143479    .0415985
+             |
+         msp |
+          0  |          0  (empty)
+          1  |  -.1204337   .2147999    -0.56   0.585    -.5884424    .3475751
+             |
+     ttl_exp |   .0163677     .00595     2.75   0.018     .0034039    .0293316
+       union |   .0773399   .0211304     3.66   0.003     .0313006    .1233792
+      tenure |    .006206   .0021585     2.88   0.014      .001503     .010909
+      wks_ue |  -.0002094   .0014534    -0.14   0.888     -.003376    .0029573
+------------------------------------------------------------------------------
+Underidentification test (Kleibergen-Paap rk LM statistic):              5.480
+                                                   Chi-sq(11) P-val =   0.9057
+------------------------------------------------------------------------------
+Weak identification test (Cragg-Donald Wald F statistic):                7.306
+                         (Kleibergen-Paap rk Wald F statistic):          4.589
+Stock-Yogo weak ID test critical values:  5% maximal IV relative bias    19.40
+                                         10% maximal IV relative bias    10.78
+                                         20% maximal IV relative bias     6.22
+                                         30% maximal IV relative bias     4.59
+                                         10% maximal IV size             32.88
+                                         15% maximal IV size             17.95
+                                         20% maximal IV size             12.86
+                                         25% maximal IV size             10.22
+Source: Stock-Yogo (2005).  Reproduced by permission.
+NB: Critical values are for Cragg-Donald F statistic and i.i.d. errors.
+------------------------------------------------------------------------------
+Warning: estimated covariance matrix of moment conditions not of full rank.
+         overidentification statistic not reported, and standard errors and
+         model tests should be interpreted with caution.
+Possible causes:
+         number of clusters insufficient to calculate robust covariance matrix
+         singleton dummy variable (dummy with one 1 and N-1 0s or vice versa)
+partial option may address problem.
+------------------------------------------------------------------------------
+Instrumented:         hours 1.msp
+Included instruments: ttl_exp union tenure wks_ue
+Excluded instruments: wks_work 2.ind_code 3.ind_code 4.ind_code 5.ind_code
+                      6.ind_code 7.ind_code 8.ind_code 9.ind_code 10.ind_code
+                      11.ind_code 12.ind_code
+Partialled-out:       _cons
+                      nb: total SS, model F and R2s are after partialling-out;
+                          any small-sample adjustments include partialled-out
+                          variables in regressor count K
+------------------------------------------------------------------------------
+
+Absorbed degrees of freedom:
+-----------------------------------------------------+
+ Absorbed FE | Categories  - Redundant  = Num. Coefs |
+-------------+---------------------------------------|
+      idcode |      3988        3988           0    *|
+    occ_code |        13          13           0    *|
+        year |        12          12           0    *|
+-----------------------------------------------------+
+* = FE nested within cluster; treated as redundant for DoF computation
+r; t=4.08 15:50:03
+
 . capture quietly log close
