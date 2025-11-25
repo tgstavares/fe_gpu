@@ -359,12 +359,8 @@ contains
         result%n_instruments = 0
         call fe_gpu_linalg_initialize()
 
-        
         tol_eff = cfg%fe_tolerance
         max_iter_eff = cfg%fe_max_iterations
-        if (cfg%fast_mode) then
-            tol_eff = max(cfg%fe_tolerance, 1.0e-6_real64)
-        end if
 
         call fe_gpu_within_transform(gpu_data, tol_eff, max_iter_eff, cfg%demean_cg, converged, iterations)
 

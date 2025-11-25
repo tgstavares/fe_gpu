@@ -278,17 +278,19 @@ int fe_gpu_fe_accumulate_impl(const T* y,
                               T* group_sum_W,
                               T* group_sum_Z,
                               int* group_counts) {
-    const int kMaxSmall = 1024;
+    const int kMaxSmall = 512;
     if (n_groups > 0 && n_groups <= kMaxSmall && n_reg_W <= 8 && n_reg_Z <= 4) {
         int threads = 256;
         int blocks = static_cast<int>(std::min((n_obs + threads - 1) / threads, static_cast<size_t>(65535)));
         size_t shmem_bytes = sizeof(T) * (static_cast<size_t>(kMaxSmall) * (1 + n_reg_W + n_reg_Z)) +
                              sizeof(int) * static_cast<size_t>(kMaxSmall);
-        fe_accumulate_small_kernel<T, kMaxSmall><<<blocks, threads, shmem_bytes>>>(
-            y, W, Z, fe_ids, n_obs, n_reg_W, n_reg_Z, leading_dim, group_sum_y, group_sum_W, group_sum_Z, group_counts,
-            n_groups);
-        cudaError_t err = cudaPeekAtLastError();
-        return store_cuda_error(err, "accumulate small kernel");
+        if (shmem_bytes <= 48 * 1024) {
+            fe_accumulate_small_kernel<T, kMaxSmall><<<blocks, threads, shmem_bytes>>>(
+                y, W, Z, fe_ids, n_obs, n_reg_W, n_reg_Z, leading_dim, group_sum_y, group_sum_W, group_sum_Z,
+                group_counts, n_groups);
+            cudaError_t err = cudaPeekAtLastError();
+            return store_cuda_error(err, "accumulate small kernel");
+        }
     }
 
     // Fallback to straightforward atomic accumulation path.

@@ -1033,7 +1033,7 @@ contains
                 do b = 1, size(next_names)
                     idx = idx + 1
                     new_mat(:, idx) = current(:, a) * next(:, b)
-                    new_names(idx) = trim(current_names(a)) // '#' // trim(next_names(b))
+                    new_names(idx) = trim(current_names(a)) // '&' // trim(next_names(b))
                     new_endog(idx) = current_endog(a) .or. next_endog(b)
                 end do
             end do

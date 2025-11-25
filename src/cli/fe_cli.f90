@@ -622,10 +622,12 @@ contains
         if (len_trim(token) == 0) return
         if (index(token, '&&') > 0) then
             call handle_double_hash(cfg, trim(token), '&&')
+        else if (index(token, '&') > 0) then
+            call handle_interaction_token(cfg, trim(token), '&')
         else if (index(token, '##') > 0) then
             call handle_double_hash(cfg, trim(token), '##')
         else if (index(token, '#') > 0) then
-            call handle_interaction_token(cfg, trim(token))
+            call handle_interaction_token(cfg, trim(token), '#')
         else
             call add_main_factor_token(cfg, trim(token))
         end if
@@ -662,14 +664,15 @@ contains
         end do
     end subroutine handle_double_hash
 
-    subroutine handle_interaction_token(cfg, token)
+    subroutine handle_interaction_token(cfg, token, delim)
         type(fe_runtime_config), intent(inout) :: cfg
         character(len=*), intent(in) :: token
+        character(len=*), intent(in) :: delim
         character(len=:), allocatable :: parts(:)
         type(fe_formula_term), allocatable :: factors(:)
         integer :: n, j
 
-        call split_token_by(token, '#', parts)
+        call split_token_by(token, delim, parts)
         n = size(parts)
         if (n <= 1) then
             if (n == 1) call add_main_factor_token(cfg, trim(parts(1)))
