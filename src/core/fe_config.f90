@@ -41,6 +41,7 @@ module fe_config
         type(fe_formula_interaction), allocatable :: formula_interactions(:)
         type(fe_formula_term), allocatable :: iv_regressor_terms(:)
         type(fe_formula_term), allocatable :: iv_instrument_terms(:)
+        character(len=:), allocatable :: save_fe_prefix
     end type fe_runtime_config
 
     public :: init_default_config
@@ -69,6 +70,8 @@ contains
         allocate(cfg%formula_interactions(0))
         allocate(cfg%iv_regressor_terms(0))
         allocate(cfg%iv_instrument_terms(0))
+        if (allocated(cfg%save_fe_prefix)) deallocate(cfg%save_fe_prefix)
+        allocate(character(len=0) :: cfg%save_fe_prefix)
         cfg%use_formula_design = .false.
         cfg%formula_has_categorical = .false.
     end subroutine init_default_config

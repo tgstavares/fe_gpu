@@ -535,6 +535,10 @@ contains
         if (allocated(Q_inv_kept)) deallocate(Q_inv_kept)
         call cleanup()
 
+        if (should_save_fixed_effects(cfg, header)) then
+            call reconstruct_and_save_fixed_effects(cfg, header, host, group_sizes, result)
+        end if
+
         call system_clock(count=it1)
         result%time_se = real(it1 - it0) / real(itrate)
 
@@ -1351,6 +1355,167 @@ contains
                 diag(i) = mat(i, i)
             end do
         end function diag_vector
+
+        logical function should_save_fixed_effects(cfg_local, header_local) result(do_save)
+            type(fe_runtime_config), intent(in) :: cfg_local
+            type(fe_dataset_header), intent(in) :: header_local
+            do_save = .false.
+            if (.not. allocated(cfg_local%save_fe_prefix)) return
+            if (len_trim(cfg_local%save_fe_prefix) == 0) return
+            if (header_local%n_fe <= 0) return
+            do_save = .true.
+        end function should_save_fixed_effects
+
+        subroutine reconstruct_and_save_fixed_effects(cfg_local, header_local, host_local, group_sizes_local, result_local)
+            type(fe_runtime_config), intent(in) :: cfg_local
+            type(fe_dataset_header), intent(in) :: header_local
+            type(fe_host_arrays), intent(in) :: host_local
+            integer, intent(in) :: group_sizes_local(:)
+            type(fe_estimation_result), intent(in) :: result_local
+
+            integer :: n_fe, n_obs, k, iter, max_iter, d, g, j
+            integer(int64) :: total_count
+            real(real64) :: tol, max_update, weighted_sum, center
+            integer :: max_groups
+            real(real64), allocatable :: residual(:)
+            real(real64), allocatable :: fe_values(:, :)
+            integer(int64), allocatable :: fe_counts(:, :)
+            real(real64), allocatable :: group_sum(:)
+            real(real64), allocatable :: group_mean(:)
+            character(len=512) :: msg
+            integer :: n_written
+
+            n_fe = header_local%n_fe
+            if (n_fe <= 0) return
+            n_obs = size(host_local%y)
+            if (n_obs <= 0) return
+            if (.not. allocated(host_local%fe_ids)) return
+            if (size(host_local%fe_ids, 1) < n_fe) return
+
+            k = 0
+            if (allocated(host_local%W)) then
+                if (size(host_local%W, 1) == n_obs) k = size(host_local%W, 2)
+            end if
+            tol = cfg_local%fe_tolerance
+            max_iter = cfg_local%fe_max_iterations
+            max_groups = maxval(group_sizes_local)
+
+            allocate(residual(n_obs))
+            residual = host_local%y
+            if (k > 0) then
+                do j = 1, k
+                    residual = residual - host_local%W(:, j) * result_local%beta(j)
+                end do
+            end if
+
+            allocate(fe_values(max_groups, n_fe))
+            fe_values = 0.0_real64
+            allocate(fe_counts(max_groups, n_fe))
+            fe_counts = 0_int64
+
+            do j = 1, n_obs
+                do d = 1, n_fe
+                    g = host_local%fe_ids(d, j)
+                    if (g >= 1 .and. g <= group_sizes_local(d)) then
+                        fe_counts(g, d) = fe_counts(g, d) + 1_int64
+                    end if
+                end do
+            end do
+
+            allocate(group_sum(max_groups))
+            allocate(group_mean(max_groups))
+
+            do iter = 1, max_iter
+                max_update = 0.0_real64
+                do d = 1, n_fe
+                    group_sum = 0.0_real64
+                    do j = 1, n_obs
+                        g = host_local%fe_ids(d, j)
+                        if (g >= 1 .and. g <= group_sizes_local(d)) then
+                            group_sum(g) = group_sum(g) + residual(j)
+                        end if
+                    end do
+
+                    weighted_sum = 0.0_real64
+                    total_count = 0_int64
+                    do g = 1, group_sizes_local(d)
+                        if (fe_counts(g, d) > 0_int64) then
+                            group_mean(g) = group_sum(g) / real(fe_counts(g, d), real64)
+                            weighted_sum = weighted_sum + group_mean(g) * real(fe_counts(g, d), real64)
+                            total_count = total_count + fe_counts(g, d)
+                        else
+                            group_mean(g) = 0.0_real64
+                        end if
+                    end do
+
+                    if (total_count > 0_int64) then
+                        center = weighted_sum / real(total_count, real64)
+                    else
+                        center = 0.0_real64
+                    end if
+
+                    do g = 1, group_sizes_local(d)
+                        if (fe_counts(g, d) > 0_int64) then
+                            group_mean(g) = group_mean(g) - center
+                            fe_values(g, d) = fe_values(g, d) + group_mean(g)
+                            if (abs(group_mean(g)) > max_update) max_update = abs(group_mean(g))
+                        else
+                            group_mean(g) = 0.0_real64
+                        end if
+                    end do
+
+                    do j = 1, n_obs
+                        g = host_local%fe_ids(d, j)
+                        if (g >= 1 .and. g <= group_sizes_local(d)) then
+                            residual(j) = residual(j) - group_mean(g)
+                        end if
+                    end do
+                end do
+                if (max_update < tol) exit
+            end do
+
+            write(msg, '("Reconstructed fixed effects (iterations=",I0,", max_update=",ES12.3,"). Saving to prefix: ",A)') &
+                iter, max_update, trim(cfg_local%save_fe_prefix)
+            call log_info(trim(msg))
+
+            call write_fe_outputs(cfg_local%save_fe_prefix, fe_values, fe_counts, group_sizes_local, n_fe)
+
+            deallocate(residual, fe_values, fe_counts, group_sum, group_mean)
+        end subroutine reconstruct_and_save_fixed_effects
+
+        subroutine write_fe_outputs(prefix, fe_values, fe_counts, group_sizes_local, n_fe)
+            character(len=*), intent(in) :: prefix
+            real(real64), intent(in) :: fe_values(:, :)
+            integer(int64), intent(in) :: fe_counts(:, :)
+            integer, intent(in) :: group_sizes_local(:)
+            integer, intent(in) :: n_fe
+
+            integer :: d, g, unit, ios
+            character(len=512) :: path
+            character(len=256) :: msg
+            integer :: written
+
+            do d = 1, n_fe
+                write(path, '(A,"_fe",I0,".csv")') trim(prefix), d
+                open(newunit=unit, file=trim(path), status='replace', action='write', iostat=ios)
+                if (ios /= 0) then
+                    write(msg, '("Unable to open fixed-effects output file ",A," (iostat=",I0,")")') trim(path), ios
+                    call log_warn(trim(msg))
+                    cycle
+                end if
+                write(unit, '(A)') 'level_id,fe_value'
+                written = 0
+                do g = 1, group_sizes_local(d)
+                    if (fe_counts(g, d) > 0_int64) then
+                        write(unit, '(I0,",",ES24.16)') g, fe_values(g, d)
+                        written = written + 1
+                    end if
+                end do
+                close(unit)
+                write(msg, '("Saved FE dimension ",I0," (",I0," levels) -> ",A)') d, written, trim(path)
+                call log_info(trim(msg))
+            end do
+        end subroutine write_fe_outputs
 
         subroutine cleanup()
             if (c_associated(d_Q%ptr)) call fe_device_free(d_Q)

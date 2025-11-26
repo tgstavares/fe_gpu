@@ -84,6 +84,13 @@ contains
                 cfg%fast_mode = .true.
             case ('--demean-cg')
                 cfg%demean_cg = .true.
+            case ('--save-fe')
+                idx = idx + 1
+                if (idx > argc) call fail_option('--save-fe requires a prefix/path')
+                call get_command_argument(idx, value)
+                if (allocated(cfg%save_fe_prefix)) deallocate(cfg%save_fe_prefix)
+                allocate(character(len=len_trim(value)) :: cfg%save_fe_prefix)
+                cfg%save_fe_prefix = trim(value)
             case default
                 write(error_unit, '("Unrecognized option: ",A)') trim(arg)
                 call print_usage()
@@ -123,6 +130,7 @@ contains
         write(error_unit, '(A)') '      --cpu-threads <int>  CPU threads for CPU fallbacks (default: OpenMP default)'
         write(error_unit, '(A)') '      --fast               Enable faster GPU clustering path (may change clustered SEs)'
         write(error_unit, '(A)') '      --verbose            Enable verbose logging'
+        write(error_unit, '(A)') '      --save-fe <prefix>   Save reconstructed fixed effects to <prefix>_fe*.csv'
         write(error_unit, '(A)') '  -h, --help               Show this help message'
     end subroutine print_usage
 
