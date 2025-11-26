@@ -109,7 +109,8 @@ build/src/fe_gpu --config config_stata.cfg
 ## Examples (from `Examples/`)
 These scripts reproduce Stata/Julia references and compare outputs and timings.
 
-### 01TESTS_fe_gpu_small.sh (N ≈ 26k)
+### **`01TESTS_fe_gpu_small.sh` (N ≈ 26k)**
+---
 - Builds `nlsw_test.parquet/bin`, runs Stata (`reghdfe`, `ivreghdfe`) as reference; `fe_gpu` estimates match Stata coefficients and SEs (homoskedastic or clustered) within reported tolerances.
 - Formulas exercised:
   1) OLS, no clustering  
@@ -135,7 +136,8 @@ These scripts reproduce Stata/Julia references and compare outputs and timings.
   |5|IV with categorical instruments (clustered)|1.87×10⁻⁸|2.33×10⁻¹|
   |6|IV with hours and msp endogenous (clustered)|1.98×10⁻⁸|1.58×10⁻⁴|
 
-### 02TESTS_miguel_data.sh (N = 5M and 116M)
+### **`02TESTS_miguel_data.sh` (N = 5M and 116M)**
+---
 - The datasets were kindly shared by an applied economist; grateful for the collaboration.
 - Converts parquet datasets to bin with FEs (id/occupation/year).
 - Stata reference via `reghdfe` / `reghdfejl` on 5M and 116M.
@@ -170,7 +172,8 @@ These scripts reproduce Stata/Julia references and compare outputs and timings.
   |4|fe_gpu clustered (standard)|≈26.5|
   |5|fe_gpu clustered (`--fast`)|≈16.0|
 
-### 03TESTS_massive_data.sh (synthetic, very large)
+### **`03TESTS_massive_data.sh` (synthetic, very large)**
+---
 - Generates `data_massive.bin/parquet` with worker/firm/time FEs and extra vars.
 - `fe_gpu` runs with/without `--fast` and clustering on three-way FEs.
 - Julia GPU reference (`test_julia1.jl`, FixedEffectModels.jl, `method=:CUDA`), plus Stata `reghdfejl` as reference.
@@ -192,12 +195,8 @@ These scripts reproduce Stata/Julia references and compare outputs and timings.
     |3|fe_gpu clustered (`--fast`)|≈23.7 |
     |4|FixedEffectModels.jl (GPU) clustered|≈470.7 (regression) / ≈521.5 total |
 
-### Utilities in Examples
-- `input_cwd.sh`: patches Stata `.do` files’ `local HOME` to the script’s folder.
-- `config_miguel.cfg`, `config_stata.cfg`: ready-to-use configs matching the test scripts.
-- Output snapshots (`*_output.txt`) capture prior reference runs for quick comparison.
-
-### 04TESTS_save_fe.sh (FE export)
+### **`04TESTS_save_fe.sh` (FE export)**
+---
 - Converts `nlswork_5M.parquet` to `nlswork_5M.bin`, runs Stata `reghdfe` to export FE coefficients, and runs `fe_gpu` with `--save-fe` to export FEs to CSV.
 - Heads from `04TESTS_save_fe_output.txt` showing matching FEs (dense ids vs. Stata labels):
   ```
@@ -216,6 +215,12 @@ These scripts reproduce Stata/Julia references and compare outputs and timings.
   5,  6.3962198714742624E-03       77,.0063962223554382
   ```
 - Result: `fes_fe1/2/3.csv` match `fe_stata_id/occupation/year.csv` (heads shown in `04TESTS_save_fe_output.txt`), confirming identical FE normalization/order.
+
+### **Utilities in Examples**
+---
+- `input_cwd.sh`: patches Stata `.do` files’ `local HOME` to the script’s folder.
+- `config_miguel.cfg`, `config_stata.cfg`: ready-to-use configs matching the test scripts.
+- Output snapshots (`*_output.txt`) capture prior reference runs for quick comparison.
 
 ## Notes on accuracy and performance
 - Coefficients match Stata/Julia references across provided examples; clustered SEs align within small numerical tolerances (check the reference logs in `Examples/`).
