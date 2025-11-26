@@ -1,0 +1,153 @@
+Wrote data_massive.bin with 150000000 observations, 8 regressors, 0 instruments, 3 FE dims (12600000184 bytes)
+Extra coefficients used: [-0.2665779136218663, 0.06381245236427056, 0.4631683295023366, 0.7596569511243322, 0.9276463627630034, -0.09644476806482337]
+Wrote data_massive.parquet (Parquet) mirroring the binary dataset
+  Activating project at `~/.julia/environments/v1.11/reghdfejl`
+  Activating project at `~/.julia/environments/v1.11`
+
+  ___  ____  ____  ____  ____ ®
+ /__    /   ____/   /   ____/      StataNow 19.5
+___/   /   /___/   /   /___/       MP—Parallel Edition
+
+ Statistics and Data Science       Copyright 1985-2025 StataCorp LLC
+                                   StataCorp
+                                   4905 Lakeway Drive
+                                   College Station, Texas 77845 USA
+                                   800-782-8272        https://www.stata.com
+                                   979-696-4600        service@stata.com
+
+Stata license: Single-user 16-core , expiring 27 Mar 2026
+Serial number: 501909308437
+  Licensed to: Escola e Economia e Gestao
+               Universidade do Minho
+
+Notes:
+      1. Stata is running in batch mode.
+      2. Unicode is supported; see help unicode_advice.
+      3. More than 2 billion observations are allowed; see help obs_advice.
+      4. Maximum number of variables is set to 5,000 but can be increased;
+          see help set_maxvar.
+
+. do "03TESTS_stata.do" 
+
+. clear all
+
+. 
+. pq use using "/home/tgst/Desktop/Project_estimator/Project_estimator/Examples
+> /data_massive.parquet", clear
+
+. 
+. capture set rmsg on
+r; t=0.00 15:23:35
+
+. reghdfejl wage tenure sick_shock extra_1 extra_2 extra_3 extra_4 extra_5 extr
+> a_6, absorb(worker firm time) vce(cluster worker firm time)
+(MWFE estimator converged in 10 iterations)
+
+HDFE linear regression with Julia                 Number of obs   =  150000000
+Absorbing 3 HDFE groups                           F(   8,     29) =   1.57e+07
+Statistics cluster-robust                         Prob > F        =     0.0000
+                                                  R-squared       =     0.6422
+                                                  Adj R-squared   =     0.6273
+Number of clusters (worker)  =    5000000         Within R-sq.    =     0.3994
+Number of clusters (firm)    =    1000000         Root MSE        =     0.5000
+Number of clusters (time)    =         30
+
+                      (Std. err. adjusted for 30 clusters in worker firm time)
+------------------------------------------------------------------------------
+             |               Robust
+        wage | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+      tenure |   .4147705   .0360957    11.49   0.000     .3409465    .4885946
+  sick_shock |  -.2000039   .0000772 -2591.18   0.000    -.2001618   -.1998461
+     extra_1 |  -.2668377    .000137 -1947.92   0.000    -.2671178   -.2665575
+     extra_2 |   .0639534    .000136   470.17   0.000     .0636752    .0642316
+     extra_3 |   .4631163   .0001608  2880.12   0.000     .4627874    .4634451
+     extra_4 |   .7596118   .0001344  5652.48   0.000     .7593369    .7598866
+     extra_5 |   .9274566   .0001627  5699.65   0.000     .9271238    .9277894
+     extra_6 |  -.0962513   .0001417  -679.43   0.000     -.096541   -.0959615
+------------------------------------------------------------------------------
+r; t=504.77 15:32:00
+
+. capture set rmsg off
+
+. 
+end of do-file
+    Demean Variables: [====>                            ]  1/9    Demean Variables: [========>                        ]  2/9    Demean Variables: [===============>                 ]  4/9    Demean Variables: [==================>              ]  5/9    Demean Variables: [=========================>       ]  7/9    Demean Variables: [=============================>   ]  8/9    Demean Variables: [================================>]  9/9[?25h[2K
+                                FixedEffectModel                                
+=================================================================================
+Number of obs:                150000000   Converged:                         true
+dof (model):                          8   dof (residuals):                     29
+R²:                               0.635   R² adjusted:                      0.620
+F-statistic:                  9.87183e5   P-value:                          0.000
+R² within:                        0.388   Iterations:                        1669
+=================================================================================
+              Estimate  Std. Error       t-stat  Pr(>|t|)   Lower 95%   Upper 95%
+─────────────────────────────────────────────────────────────────────────────────
+tenure       3.16251    0.606552        5.21391    <1e-04   1.92197     4.40305
+sick_shock  -0.200001   7.59149e-5  -2634.55       <1e-78  -0.200157   -0.199846
+extra_1     -0.271021   0.00215192   -125.944      <1e-40  -0.275422   -0.26662
+extra_2      0.0630912  0.00251825     25.0536     <1e-20   0.0579408   0.0682416
+extra_3      0.463609   0.0028249     164.115      <1e-43   0.457831    0.469387
+extra_4      0.724819   0.00447199    162.08       <1e-43   0.715672    0.733965
+extra_5      0.904583   0.00373621    242.113      <1e-48   0.896942    0.912225
+extra_6     -0.114836   0.00256286    -44.8079     <1e-27  -0.120078   -0.109595
+=================================================================================
+
+Total regression time: 470.67 seconds
+Total execution time : 521.466 seconds
+ 
+Loaded dataset header: N=150000000, K=8, L=0, FE dims=3, clusters=F, weights=F, precision_flag=0
+FE dimension 1 (worker): 5000000 groups
+FE dimension 2 (firm): 1000000 groups
+FE dimension 3 (time): 30 groups
+GPU FE solver iterations=16, max_update= 3.273E-09
+FE iterations=16, converged=T
+Timing (s): total=  57.750, load=   7.789, grouping=   0.864, demeaning=   8.883, regression=   1.177, se=  38.764
+Estimator: OLS
+Dependent variable: wage
+Standard errors clustered on FE dimensions [worker,firm,time]
+ 
+                   Coefficient          Estimate            StdErr            t-stat          Pr(>|t|)         Lower 95%         Upper 95%
+  ----------------------------   ---------------   ---------------   ---------------   ---------------   ---------------   ---------------
+                        tenure      4.147705E-01      3.609571E-02      1.149085E+01      2.578160E-12      3.409465E-01      4.885946E-01
+                    sick_shock     -2.000039E-01      7.718631E-05     -2.591184E+03      2.400460E-79     -2.001618E-01     -1.998461E-01
+                       extra_1     -2.668377E-01      1.369860E-04     -1.947919E+03      9.422442E-76     -2.671178E-01     -2.665575E-01
+                       extra_2      6.395338E-02      1.360231E-04      4.701655E+02      0.000000E+00      6.367518E-02      6.423158E-02
+                       extra_3      4.631163E-01      1.607974E-04      2.880122E+03      0.000000E+00      4.627874E-01      4.634451E-01
+                       extra_4      7.596118E-01      1.343855E-04      5.652482E+03      0.000000E+00      7.593369E-01      7.598866E-01
+                       extra_5      9.274566E-01      1.627217E-04      5.699650E+03      0.000000E+00      9.271238E-01      9.277894E-01
+                       extra_6     -9.625128E-02      1.416638E-04     -6.794346E+02      1.734218E-62     -9.654101E-02     -9.596154E-02
+  ----------------------------   ---------------   ---------------   ---------------   ---------------   ---------------   ---------------
+ 
+  dof (model): 8, dof (residuals): 29
+  R^2= 0.64223, R^2 adj= 0.62732, R^2 within= 0.39942
+  F-statistic= 6.50708E+00 (df1=8, df2=29)
+ 
+ 
+Loaded dataset header: N=150000000, K=8, L=0, FE dims=3, clusters=F, weights=F, precision_flag=0
+FE dimension 1 (worker): 5000000 groups
+FE dimension 2 (firm): 1000000 groups
+FE dimension 3 (time): 30 groups
+GPU FE solver iterations=16, max_update= 3.273E-09
+FE iterations=16, converged=T
+Timing (s): total=  23.696, load=   7.842, grouping=   0.881, demeaning=   8.896, regression=   1.179, se=   4.631
+Estimator: OLS
+Dependent variable: wage
+Standard errors clustered on FE dimensions [worker,firm,time]
+ 
+                   Coefficient          Estimate            StdErr            t-stat          Pr(>|t|)         Lower 95%         Upper 95%
+  ----------------------------   ---------------   ---------------   ---------------   ---------------   ---------------   ---------------
+                        tenure      4.147705E-01      5.478569E-02      7.570782E+00      2.401375E-08      3.027212E-01      5.268199E-01
+                    sick_shock     -2.000039E-01      1.055031E-04     -1.895715E+03      2.071573E-75     -2.002197E-01     -1.997881E-01
+                       extra_1     -2.668377E-01      1.820179E-04     -1.465997E+03      3.579552E-72     -2.672099E-01     -2.664654E-01
+                       extra_2      6.395338E-02      1.813052E-04      3.527387E+02      0.000000E+00      6.358257E-02      6.432419E-02
+                       extra_3      4.631163E-01      2.005659E-04      2.309048E+03      0.000000E+00      4.627061E-01      4.635265E-01
+                       extra_4      7.596118E-01      1.800650E-04      4.218541E+03      0.000000E+00      7.592435E-01      7.599800E-01
+                       extra_5      9.274566E-01      2.021237E-04      4.588560E+03      0.000000E+00      9.270432E-01      9.278700E-01
+                       extra_6     -9.625128E-02      1.855485E-04     -5.187393E+02      4.340975E-59     -9.663076E-02     -9.587179E-02
+  ----------------------------   ---------------   ---------------   ---------------   ---------------   ---------------   ---------------
+ 
+  dof (model): 8, dof (residuals): 29
+  R^2= 0.64223, R^2 adj= 0.62732, R^2 within= 0.39942
+  F-statistic= 6.50708E+00 (df1=8, df2=29)
+ 
