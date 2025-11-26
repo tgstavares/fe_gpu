@@ -1,0 +1,91 @@
+Detected 48 logical CPUs; using 8 worker(s)
+Loading /srv/projetos/P008/_LIXO/nlswork_5M.parquet (format=parquet)
+Loaded 5,000,000 rows in 0.140 s
+No missing values detected; skipping drop
+Missing-value cleanup took 0.109 s
+Building numeric arrays
+Relabeled FE columns in 0.195 s
+Finished numeric array build in 0.240 s
+Writing binary output to nlswork_5M.bin
+Wrote binary file in 0.152 s
+Total elapsed: 0.671 s
+{
+  "n_obs": 5000000,
+  "n_regressors": 3,
+  "n_fe_dims": 3,
+  "n_instruments": 0,
+  "clustered": false,
+  "weights": false,
+  "precision": "float64"
+}
+ 
+Runtime configuration -> data_path=nlswork_5M.bin, tol= 1.000E-08, max_iter=500, use_gpu=T, verbose=T, fast=F, demean_cg=F, cpu_threads=8, cluster_fe=[], iv_cols=[], iv_z=[])
+Initialized GPU device: IA H100 NVL
+CPU threads available: 8 (requested=8)
+Loaded dataset header: N=5000000, K=3, L=0, FE dims=3, clusters=F, weights=F, precision_flag=0
+FE dimension 1 (id): 940423 groups
+FE dimension 2 (occupation): 13 groups
+FE dimension 3 (year): 12 groups
+GPU FE solver iterations=28, max_update= 7.873E-09
+Solved normal equations with Cholesky.
+Reconstructed fixed effects (iterations=85, max_update=   8.636E-09). Saving to prefix: fes
+Saved FE dimension 1 (940423 levels) -> fes_fe1.csv
+Saved FE dimension 2 (13 levels) -> fes_fe2.csv
+Saved FE dimension 3 (12 levels) -> fes_fe3.csv
+FE iterations=28, converged=T
+Timing (s): total=   9.291, load=   0.146, grouping=   0.032, demeaning=   0.241, regression=   0.121, se=   8.481
+Estimator: OLS
+Dependent variable: ln_wage
+Standard errors: homoskedastic
+ 
+                   Coefficient          Estimate            StdErr            t-stat          Pr(>|t|)         Lower 95%         Upper 95%
+  ----------------------------   ---------------   ---------------   ---------------   ---------------   ---------------   ---------------
+                           age      7.113482E-02      6.931667E-04      1.026230E+02      0.000000E+00      6.977624E-02      7.249341E-02
+                         agesq     -7.670024E-04      4.252721E-06     -1.803557E+02      0.000000E+00     -7.753376E-04     -7.586672E-04
+                         union      9.907599E-02      4.269233E-04      2.320698E+02      0.000000E+00      9.823924E-02      9.991275E-02
+  ----------------------------   ---------------   ---------------   ---------------   ---------------   ---------------   ---------------
+ 
+  dof (model): 3, dof (residuals): 4059551
+  R^2= 0.75291, R^2 adj= 0.69567, R^2 within= 0.02087
+  F-statistic= 4.12335E+06 (df1=3, df2=4059551)
+ 
+level_id,fe_value
+1,  4.7466081919554542E-01
+2, -7.1900534049582160E-02
+3, -1.8017020895644301E-01
+4,  8.2243606167458072E-02
+5,  1.6034281272897011E-01
+6,  2.2025782575231301E-02
+7, -3.9649764898822493E-01
+8,  3.1652051933840863E-01
+9, -2.8317966635843855E-01
+id,fe_id
+1,.474660732965973
+2,-.0719006121218736
+3,-.1801702287817386
+4,.0822439351940711
+5,.1603427966768243
+6,.0220256976409412
+7,-.3964976685253394
+9,.316520502020711
+10,-.283179709913166
+level_id,fe_value
+1,  1.2856337312522509E-01
+2,  1.3786382270374165E-01
+3,  1.1871524072590944E-01
+4,  8.5833809019677465E-02
+5,  6.3962198714742624E-03
+6,  2.2192278253516495E-02
+7, -4.1997241831497334E-02
+8, -5.8581014001326454E-02
+9, -4.7121272445503404E-02
+year,fe_year
+70,.1285633727711865
+71,.1378638217829461
+72,.1187152393273611
+73,.0858338058775926
+77,.0063962223554382
+78,.0221922789962337
+80,-.0419972412345409
+82,-.058581015633755
+83,-.0471212713661038

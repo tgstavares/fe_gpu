@@ -85,7 +85,10 @@ def load_dataframe(path: pathlib.Path, *, fmt: str, columns: Sequence[str]) -> p
     raise ValueError(f"Unsupported format: {fmt}")
 
 def relabel_ids(series: pd.Series) -> np.ndarray:
-    codes, uniques = pd.factorize(series, sort=False)
+    # Sort unique levels to obtain a stable, deterministic ordering that matches
+    # the natural ordering of the original FE codes (important when comparing to
+    # external references like Stata).
+    codes, uniques = pd.factorize(series, sort=True)
     if (codes < 0).any():
         raise ValueError(f"Column {series.name} contains missing values after cleaning")
     return codes.astype(np.int32, copy=False) + 1

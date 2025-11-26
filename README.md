@@ -9,6 +9,7 @@ GPU-accelerated fixed-effects regression engine with support for multi-way clust
 - Supports interactions of continuous variables (`x&z`) and mixed terms.
 - Supports IV/2SLS with multiple endogenous variables and instruments, including categorical instruments.
 - Reads/writes a compact binary format (`.bin`) generated from parquet/CSV via helper tools.
+- Can reconstruct and save fixed-effect coefficients to CSV (`--save-fe`).
 
 ## Build and install
 ```bash
@@ -67,6 +68,7 @@ Other useful flags that can be used include:
 - `--demean-cg` : use CG-based within-transform.
 - `--cpu-threads N` : set CPU threads for fallbacks.
 - `--verbose` : show full runtime info.
+- `--save-fe <prefix>` : reconstruct and save each FE dimension after estimation to `<prefix>_fe<d>.csv` (dense level ids and values).
 
 ## Config file usage
 You can pass options via a `.cfg`:
@@ -194,6 +196,26 @@ These scripts reproduce Stata/Julia references and compare outputs and timings.
 - `input_cwd.sh`: patches Stata `.do` files’ `local HOME` to the script’s folder.
 - `config_miguel.cfg`, `config_stata.cfg`: ready-to-use configs matching the test scripts.
 - Output snapshots (`*_output.txt`) capture prior reference runs for quick comparison.
+
+### 04TESTS_save_fe.sh (FE export)
+- Converts `nlswork_5M.parquet` to `nlswork_5M.bin`, runs Stata `reghdfe` to export FE coefficients, and runs `fe_gpu` with `--save-fe` to export FEs to CSV.
+- Heads from `04TESTS_save_fe_output.txt` showing matching FEs (dense ids vs. Stata labels):
+  ```
+  level_id,fe_value                id,fe_id
+  1,  4.7466081919554542E-01       1,.474660732965973
+  2, -7.1900534049582160E-02       2,-.0719006121218736
+  3, -1.8017020895644301E-01       3,-.1801702287817386
+  4,  8.2243606167458072E-02       4,.0822439351940711
+  5,  1.6034281272897011E-01       5,.1603427966768243
+
+  level_id,fe_value                year,fe_year
+  1,  1.2856337312522509E-01       70,.1285633727711865
+  2,  1.3786382270374165E-01       71,.1378638217829461
+  3,  1.1871524072590944E-01       72,.1187152393273611
+  4,  8.5833809019677465E-02       73,.0858338058775926
+  5,  6.3962198714742624E-03       77,.0063962223554382
+  ```
+- Result: `fes_fe1/2/3.csv` match `fe_stata_id/occupation/year.csv` (heads shown in `04TESTS_save_fe_output.txt`), confirming identical FE normalization/order.
 
 ## Notes on accuracy and performance
 - Coefficients match Stata/Julia references across provided examples; clustered SEs align within small numerical tolerances (check the reference logs in `Examples/`).

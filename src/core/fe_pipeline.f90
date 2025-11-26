@@ -1429,6 +1429,7 @@ contains
                 max_update = 0.0_real64
                 do d = 1, n_fe
                     group_sum = 0.0_real64
+!$omp parallel do default(shared) private(j,g) reduction(+:group_sum)
                     do j = 1, n_obs
                         g = host_local%fe_ids(d, j)
                         if (g >= 1 .and. g <= group_sizes_local(d)) then
@@ -1464,10 +1465,12 @@ contains
                         end if
                     end do
 
+!$omp parallel do default(shared) private(j,g) reduction(max:max_update)
                     do j = 1, n_obs
                         g = host_local%fe_ids(d, j)
                         if (g >= 1 .and. g <= group_sizes_local(d)) then
                             residual(j) = residual(j) - group_mean(g)
+                            max_update = max(max_update, abs(group_mean(g)))
                         end if
                     end do
                 end do
