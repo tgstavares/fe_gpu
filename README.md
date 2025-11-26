@@ -31,7 +31,9 @@ build/src/fe_gpu --data nlsw_test.bin --fe-tol 1e-8 \
   --formula "ln_wage ~ hours tenure wks_ue, fe(idcode occ_code year)"
 ```
 estimates the following statistical model:
-$$\ln(\text{wage}_{it}) = \beta_0 + \beta_1\,\text{hours}_{it} + \beta_2\,\text{tenure}_{it} + \alpha_{\text{idcode}(i)} + \alpha_{\text{occ\_code}(j)} + \alpha_{\text{year}(t)} + \varepsilon_{it}.$$
+```math
+\ln(\text{wage}_{it}) = \beta_0 + \beta_1\,\text{hours}_{it} + \beta_2\,\text{tenure}_{it} + \alpha_{\text{idcode}(i)} + \alpha_{\text{occ\_code}(j)} + \alpha_{\text{year}(t)} + \varepsilon_{it}
+```
 with three sets of additive fixed effects (idcode, occ_code, year) by running a simple OLS regression with fixed effects and standard SEs.
 
 
