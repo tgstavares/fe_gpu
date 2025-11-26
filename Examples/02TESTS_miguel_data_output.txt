@@ -1,0 +1,281 @@
+./02TESTS_miguel_data.sh: line 6: datasets: command not found
+Detected 48 logical CPUs; using 8 worker(s)
+Loading /srv/projetos/P008/_LIXO/nlswork_116M.parquet (format=parquet)
+Loaded 116,875,264 rows in 0.801 s
+Dropped 38375424 rows containing missing values
+Missing-value cleanup took 4.582 s
+Building numeric arrays
+Relabeled FE columns in 1.151 s
+Finished numeric array build in 1.945 s
+Writing binary output to nlswork_116M.bin
+Wrote binary file in 1.596 s
+Total elapsed: 9.423 s
+{
+  "n_obs": 78499840,
+  "n_regressors": 3,
+  "n_fe_dims": 3,
+  "n_instruments": 0,
+  "clustered": false,
+  "weights": false,
+  "precision": "float64"
+}
+Detected 48 logical CPUs; using 8 worker(s)
+Loading /srv/projetos/P008/_LIXO/nlswork_5M.parquet (format=parquet)
+Loaded 5,000,000 rows in 0.145 s
+No missing values detected; skipping drop
+Missing-value cleanup took 0.116 s
+Building numeric arrays
+Relabeled FE columns in 0.158 s
+Finished numeric array build in 0.207 s
+Writing binary output to nlswork_5M.bin
+Wrote binary file in 0.157 s
+Total elapsed: 0.655 s
+{
+  "n_obs": 5000000,
+  "n_regressors": 3,
+  "n_fe_dims": 3,
+  "n_instruments": 0,
+  "clustered": false,
+  "weights": false,
+  "precision": "float64"
+}
+  Activating project at `~/.julia/environments/v1.11/reghdfejl`
+  Activating project at `~/.julia/environments/v1.11`
+  Activating project at `~/.julia/environments/v1.11/reghdfejl`
+  Activating project at `~/.julia/environments/v1.11`
+./02TESTS_miguel_data.sh: line 24: o: command not found
+r; t=0.00 7:41:32
+
+. reghdfe ln_wage age agesq union, absorb(id occupation year)
+(MWFE estimator converged in 17 iterations)
+
+HDFE Linear regression                            Number of obs   =  5,000,000
+Absorbing 3 HDFE groups                           F(   3,4059551) =   28837.51
+                                                  Prob > F        =     0.0000
+                                                  R-squared       =     0.7529
+                                                  Adj R-squared   =     0.6957
+                                                  Within R-sq.    =     0.0209
+                                                  Root MSE        =     0.2562
+
+------------------------------------------------------------------------------
+     ln_wage | Coefficient  Std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+         age |   .0711348   .0006932   102.62   0.000     .0697762    .0724934
+       agesq |   -.000767   4.25e-06  -180.36   0.000    -.0007753   -.0007587
+       union |    .099076   .0004269   232.07   0.000     .0982392    .0999127
+       _cons |   .2879504   .0204614    14.07   0.000     .2478468    .3280539
+------------------------------------------------------------------------------
+
+Absorbed degrees of freedom:
+-----------------------------------------------------+
+ Absorbed FE | Categories  - Redundant  = Num. Coefs |
+-------------+---------------------------------------|
+          id |    940423           0      940423     |
+  occupation |        13           1          12     |
+        year |        12           1          11    ?|
+-----------------------------------------------------+
+? = number of redundant parameters may be higher
+r; t=33.08 7:42:05
+
+. reghdfe ln_wage age agesq union, absorb(id occupation year) vce(cluster id oc
+> cupation year)
+(MWFE estimator converged in 17 iterations)
+Warning: VCV matrix was non-positive semi-definite; adjustment from Cameron, Ge
+> lbach & Miller applied.
+
+HDFE Linear regression                            Number of obs   =  5,000,000
+Absorbing 3 HDFE groups                           F(   3,     11) =      22.31
+Statistics robust to heteroskedasticity           Prob > F        =     0.0001
+                                                  R-squared       =     0.7529
+Number of clusters (id)      =    940,423         Adj R-squared   =     0.6957
+Number of clusters (occupation) =         13      Within R-sq.    =     0.0209
+Number of clusters (year)    =         12         Root MSE        =     0.2562
+
+                    (Std. err. adjusted for 12 clusters in id occupation year)
+------------------------------------------------------------------------------
+             |               Robust
+     ln_wage | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+         age |   .0711348   .0117121     6.07   0.000     .0453566    .0969131
+       agesq |   -.000767   .0001277    -6.01   0.000    -.0010481    -.000486
+       union |    .099076   .0185107     5.35   0.000     .0583343    .1398177
+       _cons |   .2879504   .3146505     0.92   0.380    -.4045907    .9804914
+------------------------------------------------------------------------------
+
+Absorbed degrees of freedom:
+-----------------------------------------------------+
+ Absorbed FE | Categories  - Redundant  = Num. Coefs |
+-------------+---------------------------------------|
+          id |    940423      940423           0    *|
+  occupation |        13          13           0    *|
+        year |        12          12           0    *|
+-----------------------------------------------------+
+* = FE nested within cluster; treated as redundant for DoF computation
+r; t=44.28 7:42:50
+
+. capture quietly log close
+r; t=0.00 7:42:50
+
+. pq use using "/srv/projetos/P008/_LIXO/nlswork_116M.parquet", clear
+r; t=15.45 7:43:05
+
+. reghdfejl ln_wage age agesq union, absorb(id occupation year)
+(MWFE estimator converged in 33 iterations)
+
+HDFE linear regression with Julia                 Number of obs   = 78,499,840
+Absorbing 3 HDFE groups                           F(   3,78495671)= 1767538.15
+                                                  Prob > F        =     0.0000
+                                                  R-squared       =     0.7750
+                                                  Adj R-squared   =     0.7750
+                                                  Within R-sq.    =     0.0633
+                                                  Root MSE        =     0.2218
+
+------------------------------------------------------------------------------
+     ln_wage | Coefficient  Std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+         age |   .0671851   .0000416  1615.83   0.000     .0671036    .0672666
+       agesq |  -.0010915   1.55e-06  -705.88   0.000    -.0010945   -.0010885
+       union |    .090059    .000095   948.09   0.000     .0898728    .0902452
+------------------------------------------------------------------------------
+r; t=284.72 7:47:50
+
+. reghdfejl ln_wage age agesq union, absorb(id occupation year) vce(cluster id 
+> occupation year)
+(MWFE estimator converged in 33 iterations)
+
+HDFE linear regression with Julia                 Number of obs   = 78,499,840
+Absorbing 3 HDFE groups                           F(   3,     11) =      97.41
+Statistics cluster-robust                         Prob > F        =     0.0000
+                                                  R-squared       =     0.7750
+                                                  Adj R-squared   =     0.7750
+Number of clusters (id)      =       4142         Within R-sq.    =     0.0633
+Number of clusters (occupation) =         13      Root MSE        =     0.2218
+Number of clusters (year)    =         12
+
+                    (Std. err. adjusted for 12 clusters in id occupation year)
+------------------------------------------------------------------------------
+             |               Robust
+     ln_wage | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+         age |   .0671851   .0088796     7.57   0.000     .0476411     .086729
+       agesq |  -.0010915   .0002745    -3.98   0.002    -.0016957   -.0004873
+       union |    .090059   .0167843     5.37   0.000     .0531171    .1270009
+------------------------------------------------------------------------------
+r; t=262.04 7:52:12
+
+. capture quietly log close
+ 
+Loaded dataset header: N=5000000, K=3, L=0, FE dims=3, clusters=F, weights=F, precision_flag=0
+FE dimension 1 (id): 940423 groups
+FE dimension 2 (occupation): 13 groups
+FE dimension 3 (year): 12 groups
+GPU FE solver iterations=28, max_update= 7.873E-09
+FE iterations=28, converged=T
+Timing (s): total=   0.776, load=   0.147, grouping=   0.035, demeaning=   0.243, regression=   0.120, se=   0.003
+Estimator: OLS
+Dependent variable: ln_wage
+Standard errors: homoskedastic
+ 
+                   Coefficient          Estimate            StdErr            t-stat          Pr(>|t|)         Lower 95%         Upper 95%
+  ----------------------------   ---------------   ---------------   ---------------   ---------------   ---------------   ---------------
+                           age      7.113482E-02      6.931667E-04      1.026230E+02      0.000000E+00      6.977624E-02      7.249341E-02
+                         agesq     -7.670024E-04      4.252721E-06     -1.803557E+02      0.000000E+00     -7.753376E-04     -7.586672E-04
+                         union      9.907599E-02      4.269233E-04      2.320698E+02      0.000000E+00      9.823924E-02      9.991275E-02
+  ----------------------------   ---------------   ---------------   ---------------   ---------------   ---------------   ---------------
+ 
+  dof (model): 3, dof (residuals): 4059551
+  R^2= 0.75291, R^2 adj= 0.69567, R^2 within= 0.02087
+  F-statistic= 4.12335E+06 (df1=3, df2=4059551)
+ 
+ 
+Loaded dataset header: N=5000000, K=3, L=0, FE dims=3, clusters=F, weights=F, precision_flag=0
+FE dimension 1 (id): 940423 groups
+FE dimension 2 (occupation): 13 groups
+FE dimension 3 (year): 12 groups
+GPU FE solver iterations=28, max_update= 7.873E-09
+FE iterations=28, converged=T
+Timing (s): total=   2.163, load=   0.160, grouping=   0.035, demeaning=   0.252, regression=   0.149, se=   1.340
+Estimator: OLS
+Dependent variable: ln_wage
+Standard errors clustered on FE dimensions [id,occupation,year]
+ 
+                   Coefficient          Estimate            StdErr            t-stat          Pr(>|t|)         Lower 95%         Upper 95%
+  ----------------------------   ---------------   ---------------   ---------------   ---------------   ---------------   ---------------
+                           age      7.113482E-02      1.171215E-02      6.073593E+00      8.033874E-05      4.535656E-02      9.691309E-02
+                         agesq     -7.670024E-04      1.276935E-04     -6.006589E+00      8.842087E-05     -1.048054E-03     -4.859509E-04
+                         union      9.907599E-02      1.851068E-02      5.352369E+00      2.329671E-04      5.833426E-02      1.398177E-01
+  ----------------------------   ---------------   ---------------   ---------------   ---------------   ---------------   ---------------
+ 
+  dof (model): 3, dof (residuals): 11
+  R^2= 0.75291, R^2 adj= 0.69567, R^2 within= 0.02087
+  F-statistic= 1.11729E+01 (df1=3, df2=11)
+ 
+ 
+Loaded dataset header: N=78499840, K=3, L=0, FE dims=3, clusters=F, weights=F, precision_flag=0
+FE dimension 1 (id): 4142 groups
+FE dimension 2 (occupation): 13 groups
+FE dimension 3 (year): 12 groups
+GPU FE solver iterations=28, max_update= 5.859E-09
+FE iterations=28, converged=T
+Timing (s): total=  15.181, load=   2.482, grouping=   0.459, demeaning=  11.266, regression=   0.739, se=   0.005
+Estimator: OLS
+Dependent variable: ln_wage
+Standard errors: homoskedastic
+ 
+                   Coefficient          Estimate            StdErr            t-stat          Pr(>|t|)         Lower 95%         Upper 95%
+  ----------------------------   ---------------   ---------------   ---------------   ---------------   ---------------   ---------------
+                           age      6.718507E-02      4.157923E-05      1.615832E+03      0.000000E+00      6.710357E-02      6.726656E-02
+                         agesq     -1.091502E-03      1.546290E-06     -7.058844E+02      0.000000E+00     -1.094532E-03     -1.088471E-03
+                         union      9.005902E-02      9.498965E-05      9.480930E+02      0.000000E+00      8.987285E-02      9.024520E-02
+  ----------------------------   ---------------   ---------------   ---------------   ---------------   ---------------   ---------------
+ 
+  dof (model): 3, dof (residuals): 78495672
+  R^2= 0.77502, R^2 adj= 0.77501, R^2 within= 0.06328
+  F-statistic= 9.01364E+07 (df1=3, df2=78495672)
+ 
+ 
+Loaded dataset header: N=78499840, K=3, L=0, FE dims=3, clusters=F, weights=F, precision_flag=0
+FE dimension 1 (id): 4142 groups
+FE dimension 2 (occupation): 13 groups
+FE dimension 3 (year): 12 groups
+GPU FE solver iterations=28, max_update= 5.859E-09
+FE iterations=28, converged=T
+Timing (s): total=  26.519, load=   2.480, grouping=   0.503, demeaning=  11.264, regression=   0.737, se=  11.310
+Estimator: OLS
+Dependent variable: ln_wage
+Standard errors clustered on FE dimensions [id,occupation,year]
+ 
+                   Coefficient          Estimate            StdErr            t-stat          Pr(>|t|)         Lower 95%         Upper 95%
+  ----------------------------   ---------------   ---------------   ---------------   ---------------   ---------------   ---------------
+                           age      6.718507E-02      8.879639E-03      7.566193E+00      1.105382E-05      4.764111E-02      8.672902E-02
+                         agesq     -1.091502E-03      2.745090E-04     -3.976197E+00      2.172913E-03     -1.695692E-03     -4.873116E-04
+                         union      9.005902E-02      1.678426E-02      5.365682E+00      2.282821E-04      5.311711E-02      1.270009E-01
+  ----------------------------   ---------------   ---------------   ---------------   ---------------   ---------------   ---------------
+ 
+  dof (model): 3, dof (residuals): 11
+  R^2= 0.77502, R^2 adj= 0.77501, R^2 within= 0.06328
+  F-statistic= 1.26313E+01 (df1=3, df2=11)
+ 
+ 
+Loaded dataset header: N=78499840, K=3, L=0, FE dims=3, clusters=F, weights=F, precision_flag=0
+FE dimension 1 (id): 4142 groups
+FE dimension 2 (occupation): 13 groups
+FE dimension 3 (year): 12 groups
+GPU FE solver iterations=28, max_update= 5.859E-09
+FE iterations=28, converged=T
+Timing (s): total=  15.967, load=   2.506, grouping=   0.479, demeaning=  11.272, regression=   0.737, se=   0.742
+Estimator: OLS
+Dependent variable: ln_wage
+Standard errors clustered on FE dimensions [id,occupation,year]
+ 
+                   Coefficient          Estimate            StdErr            t-stat          Pr(>|t|)         Lower 95%         Upper 95%
+  ----------------------------   ---------------   ---------------   ---------------   ---------------   ---------------   ---------------
+                           age      6.718507E-02      9.536878E-03      7.044765E+00      2.141083E-05      4.619454E-02      8.817560E-02
+                         agesq     -1.091502E-03      3.015309E-04     -3.619867E+00      4.027403E-03     -1.755167E-03     -4.278367E-04
+                         union      9.005902E-02      1.827812E-02      4.927150E+00      4.517039E-04      4.982916E-02      1.302889E-01
+  ----------------------------   ---------------   ---------------   ---------------   ---------------   ---------------   ---------------
+ 
+  dof (model): 3, dof (residuals): 11
+  R^2= 0.77502, R^2 adj= 0.77501, R^2 within= 0.06328
+  F-statistic= 1.26313E+01 (df1=3, df2=11)
+ 

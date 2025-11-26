@@ -21,7 +21,7 @@ $DIRPROGS/tools/dataframe_to_fe_binary.py nlsw_test.parquet \
 
 # Estimations
 $DIRPROGS/build/src/fe_gpu --data nlsw_test.bin --fe-tol 1e-8 --formula "ln_wage ~ hours ttl_exp union tenure wks_ue, fe(idcode occ_code year)"
-$DIRPROGS/build/src/fe_gpu --data nlsw_test.bin --fe-tol 1e-8 --formula "ln_wage ~ hours ttl_exp union tenure wks_ue, fe(idcode occ_code year) vce(cluster idcode occ_code year)"
+$DIRPROGS/build/src/fe_gpu --data nlsw_test.bin --fe-tol 1e-8 --formula "ln_wage ~ hours ttl_exp union tenure wks_ue, fe(idcode occ_code year) cluster(idcode occ_code year)"
 $DIRPROGS/build/src/fe_gpu --data nlsw_test.bin --fe-tol 1e-8 --formula "ln_wage ~ hours ttl_exp union tenure wks_ue i.1.ind_code&&i.2.msp tenure&wks_ue, fe(idcode occ_code year) cluster(idcode occ_code year)"
 $DIRPROGS/build/src/fe_gpu --data nlsw_test.bin --fe-tol 1e-8 --formula "ln_wage ~ hours ttl_exp union tenure wks_ue (hours ~ wks_work), fe(idcode occ_code year) cluster(idcode occ_code)"
 $DIRPROGS/build/src/fe_gpu --data nlsw_test.bin --fe-tol 1e-8 --formula "ln_wage ~ hours ttl_exp union tenure wks_ue i.1.ind_code&&i.2.msp (hours ~ wks_work), fe(idcode occ_code year) cluster(idcode occ_code)"
