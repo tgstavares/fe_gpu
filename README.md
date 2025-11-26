@@ -23,7 +23,7 @@ Main binary: `build/src/fe_gpu`
 
 ## CLI usage (direct binary)
 The program estimates linear models of the form  
-$y = X\beta + \epsilon$, where $X$ includes user‑specified regressors, expanded categorical dummies (with a chosen base), interactions, and when requested instrumented columns; fixed effects are partialled out via within‑transformation, and clustered or homoskedastic variance estimators are produced as requested.
+$`y = X\beta + \epsilon`$, where $`X`$ includes user‑specified regressors, expanded categorical dummies (with a chosen base), interactions, and when requested instrumented columns; fixed effects are partialled out via within‑transformation, and clustered or homoskedastic variance estimators are produced as requested.
 
 For example, the command
 ```bash
@@ -31,9 +31,7 @@ build/src/fe_gpu --data nlsw_test.bin --fe-tol 1e-8 \
   --formula "ln_wage ~ hours tenure wks_ue, fe(idcode occ_code year)"
 ```
 estimates the following statistical model:
-$$
-\ln(\text{wage}_{it}) = \beta_0 + \beta_1\,\text{hours}_{it} + \beta_2\,\text{tenure}_{it} + \alpha_{\text{idcode}(i)} + \alpha_{\text{occ\_code}(j)} + \alpha_{\text{year}(t)} + \varepsilon_{it}.
-$$
+$$\ln(\text{wage}_{it}) = \beta_0 + \beta_1\,\text{hours}_{it} + \beta_2\,\text{tenure}_{it} + \alpha_{\text{idcode}(i)} + \alpha_{\text{occ\_code}(j)} + \alpha_{\text{year}(t)} + \varepsilon_{it}.$$
 with three sets of additive fixed effects (idcode, occ_code, year) by running a simple OLS regression with fixed effects and standard SEs.
 
 
