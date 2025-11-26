@@ -124,17 +124,14 @@ These scripts reproduce Stata/Julia references and compare outputs and timings.
      `ln_wage ~ hours ttl_exp union tenure wks_ue (hours i.msp ~ wks_work i.ind_code), fe(idcode occ_code year) vce(cluster idcode occ_code)`
 - Comparisons (vs. Stata logs `01TESTS_fe_gpu_small_output.txt`):
 
-  | # | Model | Avg \\|β_fe_gpu − β_Stata\\| | Avg rel SE diff |
+  | # | Model | Avg coef dist | Avg rel SE diff |
   |---|-------|-------------------------------|------------------|
   |1|OLS (no clustering)|2.97×10⁻⁸|6.43×10⁻⁵|
   |2|OLS (clustered on idcode/occ_code/year)|2.97×10⁻⁸|9.29×10⁻⁶|
   |3|OLS with categorical + continuous interactions (clustered)|5.84×10⁻⁹|6.10×10⁻²|
   |4|IV with hours endogenous (clustered)|1.34×10⁻⁸|1.82×10⁻⁴|
-  |5|IV with categorical instruments (clustered)†|1.87×10⁻⁸|2.33×10⁻¹|
+  |5|IV with categorical instruments (clustered)|1.87×10⁻⁸|2.33×10⁻¹|
   |6|IV with hours and msp endogenous (clustered)|1.98×10⁻⁸|1.58×10⁻⁴|
-
-  †Regression 5 excludes zero (omitted) categories; factor-level SEs differ modestly, coefficients align.
-
 
 ### 02TESTS_miguel_data.sh (N = 5M and 116M)
 - The datasets were kindly shared by an applied economist; grateful for the collaboration.
@@ -148,14 +145,14 @@ These scripts reproduce Stata/Julia references and compare outputs and timings.
 
 - Small dataset (5M) comparisons vs. Stata:
 
-  | # | Mode | Avg \|β_fe_gpu − β_Stata\| | Avg rel SE diff |
+  | # | Mode | Avg coef dist | Avg rel SE diff |
   |---|-----|---------------------------|------------------|
   |1|Non-clustered|1.08×10⁻⁸|2.48×10⁻⁴|
   |2|Clustered (id, occupation, year)|1.08×10⁻⁸|1.88×10⁻⁵|
 
 - Large dataset (116M) comparisons vs. Stata:
 
-  | # | Mode | Avg \|β_fe_gpu − β_Stata\| | Avg rel SE diff |
+  | # | Mode | Avg coef dist | Avg rel SE diff |
   |---|-----|---------------------------|------------------|
   |1|Non-clustered|1.73×10⁻⁸|1.00×10⁻³|
   |2|Clustered (standard)|1.73×10⁻⁸|1.32×10⁻⁵|
@@ -179,7 +176,7 @@ These scripts reproduce Stata/Julia references and compare outputs and timings.
 
   - vs. Stata `reghdfejl` (clustered SEs):
 
-    | # | Mode | Avg \|β_fe_gpu − β_Stata\| | Avg rel SE diff |
+    | # | Mode | Avg coef dist | Avg rel SE diff |
     |---|------|---------------------------|------------------|
     |1|fe_gpu clustered (standard)|5.0×10⁻⁹|1.20×10⁻⁴|
     |2|fe_gpu clustered (`--fast`)|5.0×10⁻⁹|2.49×10⁻¹|
