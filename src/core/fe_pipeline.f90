@@ -77,11 +77,13 @@ contains
         integer :: i, k, n_obs, n_fe, iter, d, n_reg
         real(real64) :: tol, max_update, rss, sigma2
         integer :: max_iters
-        real(real64), allocatable :: WW(:, :), Wy(:), Q_inv(:, :), variance_diag(:)
+        real(real64), allocatable :: WW(:, :), Wy(:), Q_inv(:, :)
+        real(real64), allocatable :: residual(:)
+        real(real64), allocatable :: original_y(:)
         integer :: info
         real(real64) :: t0, t1
         character(len=256) :: msg
-        integer, allocatable :: keep_idx(:)
+        logical :: cluster_success
 
         n_obs = size(host%y)
         n_reg = size(host%W, 2)
@@ -90,14 +92,27 @@ contains
         max_iters = cfg%fe_max_iterations
         max_update = 0.0_real64
 
+        if (allocated(original_y)) deallocate(original_y)
         if (allocated(result%beta)) deallocate(result%beta)
         if (allocated(result%se)) deallocate(result%se)
+        if (allocated(result%coef_names)) deallocate(result%coef_names)
         if (allocated(result%cluster_fe_dims)) deallocate(result%cluster_fe_dims)
+        call initialize_cpu_cluster_dims(cfg%cluster_fe_dims, header%n_fe, result%cluster_fe_dims)
+        if (allocated(result%cluster_labels)) deallocate(result%cluster_labels)
+        if (allocated(result%cluster_fe_dims)) then
+            allocate(character(len=1) :: result%cluster_labels(size(result%cluster_fe_dims)))
+            result%cluster_labels = ''
+        else
+            allocate(character(len=1) :: result%cluster_labels(0))
+        end if
+        allocate(original_y(n_obs))
+        original_y = host%y
+        result%tss_total = compute_tss(original_y, .true.)
         allocate(result%beta(max(0, n_reg)))
         allocate(result%se(max(0, n_reg)))
         result%beta = 0.0_real64
         result%se = 0.0_real64
-        allocate(result%cluster_fe_dims(0))
+        call initialize_coefficient_names_cpu(header, n_reg, result%coef_names)
 
         call cpu_time(t0)
         if (n_fe > 0) then
@@ -116,6 +131,8 @@ contains
         end if
         call cpu_time(t1)
         result%time_demean = t1 - t0
+        result%tss_within = sum(host%y * host%y)
+        result%dof_fes = estimate_fe_dof(group_sizes)
 
         if (n_reg > 0) then
             allocate(WW(n_reg, n_reg))
@@ -123,8 +140,6 @@ contains
             WW = matmul(transpose(host%W), host%W)
             Wy = matmul(transpose(host%W), host%y)
             allocate(Q_inv(n_reg, n_reg))
-            allocate(variance_diag(n_reg))
-            variance_diag = 0.0_real64
 
             ! Solve WW * beta = Wy using LU factorization
             info = 0
@@ -137,7 +152,7 @@ contains
                 if (allocated(WW)) deallocate(WW)
                 if (allocated(Wy)) deallocate(Wy)
                 if (allocated(Q_inv)) deallocate(Q_inv)
-                if (allocated(variance_diag)) deallocate(variance_diag)
+                if (allocated(original_y)) deallocate(original_y)
                 return
             end if
 
@@ -145,19 +160,40 @@ contains
             result%rank = n_reg
             result%dof_model = n_reg
 
-            rss = compute_rss(host%y, host%W, result%beta)
+            allocate(residual(n_obs))
+            residual = host%y - matmul(host%W, result%beta)
+            rss = sum(residual * residual)
             sigma2 = rss / max(1.0_real64, real(n_obs - n_reg, real64))
-            do i = 1, size(result%beta)
-                result%se(i) = sqrt(max(0.0_real64, sigma2 * Q_inv(i, i)))
-            end do
+            result%rss = rss
             result%dof_resid = n_obs - n_reg
+
+            if (allocated(result%cluster_fe_dims) .and. size(result%cluster_fe_dims) > 0) then
+                call compute_clustered_se_cpu(Q_inv, residual, host%W, host%fe_ids, group_sizes, &
+                    result%cluster_fe_dims, result%se, result%dof_resid, cluster_success)
+                if (.not. cluster_success) then
+                    if (allocated(result%cluster_fe_dims)) deallocate(result%cluster_fe_dims)
+                    if (allocated(result%cluster_labels)) deallocate(result%cluster_labels)
+                    allocate(result%cluster_fe_dims(0))
+                    allocate(character(len=1) :: result%cluster_labels(0))
+                    do i = 1, size(result%beta)
+                        result%se(i) = sqrt(max(0.0_real64, sigma2 * Q_inv(i, i)))
+                    end do
+                end if
+            else
+                do i = 1, size(result%beta)
+                    result%se(i) = sqrt(max(0.0_real64, sigma2 * Q_inv(i, i)))
+                end do
+            end if
             call cpu_time(t1)
             result%time_se = t1 - t0
+            if (allocated(residual)) deallocate(residual)
             if (allocated(WW)) deallocate(WW)
             if (allocated(Wy)) deallocate(Wy)
             if (allocated(Q_inv)) deallocate(Q_inv)
-            if (allocated(variance_diag)) deallocate(variance_diag)
         end if
+
+        call finalize_regression_stats(result, int(n_obs, int64), n_fe > 0)
+        if (allocated(original_y)) deallocate(original_y)
 
         write(msg, '("CPU FE solver iterations=",I0,", max_update=",ES12.3)') result%fe_iterations, max_update
         call log_info(trim(msg))
@@ -231,6 +267,199 @@ contains
             out = sum(res * res)
             deallocate(res)
         end function compute_rss
+
+        subroutine initialize_coefficient_names_cpu(header_local, n_reg, names_out)
+            type(fe_dataset_header), intent(in) :: header_local
+            integer, intent(in) :: n_reg
+            character(len=:), allocatable, intent(out) :: names_out(:)
+            integer :: name_len, i
+            character(len=64) :: label_buf
+
+            if (allocated(names_out)) deallocate(names_out)
+            if (n_reg <= 0) then
+                allocate(character(len=1) :: names_out(0))
+                return
+            end if
+
+            name_len = 0
+            if (allocated(header_local%regressor_names)) then
+                if (size(header_local%regressor_names) == n_reg) then
+                    do i = 1, n_reg
+                        name_len = max(name_len, len_trim(header_local%regressor_names(i)))
+                    end do
+                end if
+            end if
+            do i = 1, n_reg
+                write(label_buf, '(A,I0)') 'beta_', i
+                name_len = max(name_len, len_trim(label_buf))
+            end do
+            if (name_len <= 0) name_len = 12
+
+            allocate(character(len=name_len) :: names_out(n_reg))
+            names_out = ''
+            if (allocated(header_local%regressor_names) .and. size(header_local%regressor_names) == n_reg) then
+                do i = 1, n_reg
+                    call assign_padded_simple(names_out(i), trim(header_local%regressor_names(i)))
+                end do
+            else
+                do i = 1, n_reg
+                    write(label_buf, '(A,I0)') 'beta_', i
+                    call assign_padded_simple(names_out(i), trim(label_buf))
+                end do
+            end if
+        end subroutine initialize_coefficient_names_cpu
+
+        subroutine assign_padded_simple(dest, source)
+            character(len=*), intent(inout) :: dest
+            character(len=*), intent(in) :: source
+            integer :: copy_len
+
+            dest = ''
+            copy_len = min(len_trim(source), len(dest))
+            if (copy_len > 0) dest(1:copy_len) = source(1:copy_len)
+        end subroutine assign_padded_simple
+
+        subroutine initialize_cpu_cluster_dims(requested, n_fe_local, output)
+            integer(int32), intent(in), allocatable :: requested(:)
+            integer, intent(in) :: n_fe_local
+            integer(int32), allocatable, intent(out) :: output(:)
+            integer(int32), allocatable :: temp(:)
+            integer :: i, count_valid, final_count
+            character(len=128) :: warn_buf
+
+            if (allocated(output)) deallocate(output)
+            if (.not. allocated(requested)) then
+                allocate(output(0))
+                return
+            end if
+            if (size(requested) == 0) then
+                allocate(output(0))
+                return
+            end if
+
+            allocate(temp(size(requested)))
+            count_valid = 0
+            do i = 1, size(requested)
+                if (requested(i) < 1_int32 .or. requested(i) > n_fe_local) cycle
+                if (any(temp(1:count_valid) == requested(i))) cycle
+                count_valid = count_valid + 1
+                temp(count_valid) = requested(i)
+            end do
+
+            if (count_valid <= 0) then
+                allocate(output(0))
+                deallocate(temp)
+                return
+            end if
+
+            final_count = min(count_valid, MAX_CLUSTER_DIMS)
+            if (count_valid > MAX_CLUSTER_DIMS) then
+                write(warn_buf, '("Limiting clustered SEs to the first ",I0," dimensions.")') MAX_CLUSTER_DIMS
+                call log_warn(trim(warn_buf))
+            end if
+            allocate(output(final_count))
+            output = temp(1:final_count)
+            deallocate(temp)
+        end subroutine initialize_cpu_cluster_dims
+
+        subroutine compute_clustered_se_cpu(Q_inv_full, residual_vec, W_mat, fe_ids, group_sizes_local, cluster_dims, &
+                se_out, dof_resid_out, success)
+            real(real64), intent(in) :: Q_inv_full(:, :)
+            real(real64), intent(in) :: residual_vec(:)
+            real(real64), intent(in) :: W_mat(:, :)
+            integer(int32), intent(in) :: fe_ids(:, :)
+            integer, intent(in) :: group_sizes_local(:)
+            integer(int32), intent(in) :: cluster_dims(:)
+            real(real64), intent(inout) :: se_out(:)
+            integer(int64), intent(inout) :: dof_resid_out
+            logical, intent(out) :: success
+            integer :: n_reg_local, n_cluster_dims, mask, subset_size, subset_pos
+            integer :: n_clusters, obs, j
+            integer(int32), allocatable :: subset_dims(:)
+            integer(int32), allocatable :: combo_ids(:)
+            real(real64), allocatable :: scores(:, :)
+            real(real64), allocatable :: meat(:, :)
+            real(real64), allocatable :: cov_mat(:, :)
+            real(real64), allocatable :: cov_accum(:, :)
+            real(real64) :: weight, scalar, denom_adj
+            integer :: param_count_effective
+            integer :: min_single_cluster
+            integer :: status_build
+            character(len=256) :: warn_msg
+            integer(int64) :: n_obs_local
+
+            success = .false.
+            n_reg_local = size(W_mat, 2)
+            n_cluster_dims = size(cluster_dims)
+            if (n_reg_local <= 0 .or. n_cluster_dims <= 0) return
+
+            allocate(cov_accum(n_reg_local, n_reg_local))
+            cov_accum = 0.0_real64
+            min_single_cluster = huge(0)
+            n_obs_local = int(size(residual_vec), int64)
+            allocate(combo_ids(int(n_obs_local)))
+
+            do mask = 1, ishft(1, n_cluster_dims) - 1
+                subset_size = popcnt(mask)
+                allocate(subset_dims(subset_size))
+                subset_pos = 0
+                do j = 1, n_cluster_dims
+                    if (iand(mask, ishft(1, j - 1)) /= 0) then
+                        subset_pos = subset_pos + 1
+                        subset_dims(subset_pos) = cluster_dims(j)
+                    end if
+                end do
+
+                call build_cluster_ids(fe_ids, group_sizes_local, subset_dims, combo_ids, n_clusters, status_build)
+                if (status_build /= 0 .or. n_clusters <= 0) then
+                    write(warn_msg, '("Unable to build cluster identifiers for subset; status=",I0,")")') status_build
+                    call log_warn(trim(warn_msg))
+                    deallocate(subset_dims)
+                    deallocate(cov_accum, combo_ids)
+                    return
+                end if
+
+                if (subset_size == 1) min_single_cluster = min(min_single_cluster, n_clusters)
+
+                allocate(scores(n_clusters, n_reg_local))
+                scores = 0.0_real64
+                do obs = 1, size(residual_vec)
+                    if (combo_ids(obs) < 1 .or. combo_ids(obs) > n_clusters) cycle
+                    do j = 1, n_reg_local
+                        scores(combo_ids(obs), j) = scores(combo_ids(obs), j) + residual_vec(obs) * W_mat(obs, j)
+                    end do
+                end do
+
+                meat = matmul(transpose(scores), scores)
+                cov_mat = matmul(Q_inv_full, matmul(meat, Q_inv_full))
+
+                weight = merge(1.0_real64, -1.0_real64, mod(subset_size, 2) == 1)
+                cov_accum = cov_accum + weight * cov_mat
+
+                deallocate(scores, meat, cov_mat, subset_dims)
+            end do
+
+            if (min_single_cluster < huge(0)) then
+                dof_resid_out = max(1_int64, int(min_single_cluster, int64) - 1_int64)
+            end if
+
+            param_count_effective = n_reg_local
+            denom_adj = real(max(1_int64, n_obs_local - int(param_count_effective, int64)), real64)
+            scalar = real(max(1_int64, n_obs_local - 1_int64), real64) / denom_adj
+            if (min_single_cluster > 1 .and. min_single_cluster < huge(0)) then
+                scalar = scalar * real(min_single_cluster, real64) / real(min_single_cluster - 1, real64)
+            end if
+
+            cov_accum = 0.5_real64 * (cov_accum + transpose(cov_accum))
+            cov_accum = cov_accum * scalar
+
+            do j = 1, n_reg_local
+                se_out(j) = sqrt(max(0.0_real64, cov_accum(j, j)))
+            end do
+
+            deallocate(cov_accum, combo_ids)
+            success = .true.
+        end subroutine compute_clustered_se_cpu
 
         subroutine lapack_solve_and_invert(A, b, inv_out, info_out)
             real(real64), intent(inout) :: A(:, :)

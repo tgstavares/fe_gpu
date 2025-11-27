@@ -70,6 +70,7 @@ contains
                 call parse_formula_string(cfg, trim(value))
             case ('--cpu-only')
                 cfg%use_gpu = .false.
+                cfg%force_cpu = .true.
             case ('--gpu')
                 cfg%use_gpu = .true.
             case ('--verbose')
@@ -98,6 +99,10 @@ contains
             end select
             idx = idx + 1
         end do
+
+        if (cfg%force_cpu) then
+            cfg%use_gpu = .false.
+        end if
 
         if (.not. allocated(cfg%data_path)) cfg%data_path = 'data.bin'
         call sort_cluster_dimensions(cfg)
@@ -395,8 +400,11 @@ contains
             case ('cpu_threads')
                 read(value, *, iostat=ios) cfg%cpu_threads
                 if (ios /= 0 .or. cfg%cpu_threads < 0) call fail_option('Invalid cpu_threads value in config file')
+            case ('force_cpu')
+                cfg%force_cpu = parse_logical(value)
+                if (cfg%force_cpu) cfg%use_gpu = .false.
             case ('use_gpu')
-                cfg%use_gpu = parse_logical(value)
+                if (.not. cfg%force_cpu) cfg%use_gpu = parse_logical(value)
             case ('fast')
                 cfg%fast_mode = parse_logical(value)
             case ('verbose')

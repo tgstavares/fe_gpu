@@ -58,11 +58,15 @@ program fe_gpu_main
     call init_default_config(cfg)
     call parse_cli_arguments(cfg)
 
-    use_gpu = cfg%use_gpu
-    if (cfg%use_gpu .and. .not. fe_gpu_backend_available()) then
+    use_gpu = cfg%use_gpu .and. (.not. cfg%force_cpu)
+    if (cfg%force_cpu) then
+        call log_info('CPU-only flag set; forcing CPU execution.')
+    end if
+    if (use_gpu .and. .not. fe_gpu_backend_available()) then
         call log_warn('GPU backend unavailable; falling back to CPU execution (not yet implemented).')
         use_gpu = .false.
     end if
+    cfg%use_gpu = use_gpu
 
 
     if (use_gpu) then
