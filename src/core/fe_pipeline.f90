@@ -12,7 +12,7 @@ module fe_pipeline
     use fe_solver, only: chol_solve_and_invert, set_solver_logging
     use fe_logging, only: log_warn, log_info
     use fe_cluster_utils, only: build_cluster_ids
-    use omp_lib, only: omp_get_num_threads, omp_get_thread_num, omp_get_max_threads
+    use omp_lib, only: omp_get_num_threads, omp_get_thread_num, omp_get_max_threads, omp_get_wtime
     implicit none
     intrinsic :: system_clock
     integer(int64), parameter :: REAL64_BYTES = storage_size(0.0_real64) / 8
@@ -80,6 +80,10 @@ contains
         real(real64), allocatable :: WW(:, :), Wy(:), Q_inv(:, :)
         real(real64), allocatable :: residual(:)
         real(real64), allocatable :: original_y(:)
+        real(real64), allocatable :: sum_y_buf(:)
+        real(real64), allocatable :: sum_W_buf(:, :)
+        integer, allocatable :: counts_buf(:)
+        integer :: max_groups
         integer :: info
         real(real64) :: t0, t1
         character(len=256) :: msg
@@ -96,12 +100,12 @@ contains
         if (allocated(result%beta)) deallocate(result%beta)
         if (allocated(result%se)) deallocate(result%se)
         if (allocated(result%coef_names)) deallocate(result%coef_names)
-        if (allocated(result%cluster_fe_dims)) deallocate(result%cluster_fe_dims)
-        call initialize_cpu_cluster_dims(cfg%cluster_fe_dims, header%n_fe, result%cluster_fe_dims)
-        if (allocated(result%cluster_labels)) deallocate(result%cluster_labels)
-        if (allocated(result%cluster_fe_dims)) then
-            allocate(character(len=1) :: result%cluster_labels(size(result%cluster_fe_dims)))
-            result%cluster_labels = ''
+            if (allocated(result%cluster_fe_dims)) deallocate(result%cluster_fe_dims)
+            call initialize_cpu_cluster_dims(cfg%cluster_fe_dims, header%n_fe, result%cluster_fe_dims)
+            if (allocated(result%cluster_labels)) deallocate(result%cluster_labels)
+            if (allocated(result%cluster_fe_dims)) then
+                allocate(character(len=1) :: result%cluster_labels(size(result%cluster_fe_dims)))
+                result%cluster_labels = ''
         else
             allocate(character(len=1) :: result%cluster_labels(0))
         end if
@@ -114,12 +118,27 @@ contains
         result%se = 0.0_real64
         call initialize_coefficient_names_cpu(header, n_reg, result%coef_names)
 
-        call cpu_time(t0)
+        if (size(group_sizes) > 0) then
+            max_groups = maxval(group_sizes)
+        else
+            max_groups = 1
+        end if
+        if (max_groups < 1) max_groups = 1
+        allocate(sum_y_buf(max_groups))
+        if (n_reg > 0) then
+            allocate(sum_W_buf(max_groups, n_reg))
+        else
+            allocate(sum_W_buf(1, 1))
+        end if
+        allocate(counts_buf(max_groups))
+
+        t0 = omp_get_wtime()
         if (n_fe > 0) then
             do iter = 1, max_iters
                 max_update = 0.0_real64
                 do d = 1, n_fe
-                    call cpu_demean_single(host%y, host%W, host%fe_ids(d, :), group_sizes(d), max_update)
+                    call cpu_demean_single(host%y, host%W, host%fe_ids(d, :), group_sizes(d), max_update, &
+                        sum_y_buf, sum_W_buf, counts_buf)
                 end do
                 if (max_update < tol) exit
             end do
@@ -129,12 +148,13 @@ contains
             result%fe_iterations = 0
             result%converged = .true.
         end if
-        call cpu_time(t1)
-        result%time_demean = t1 - t0
+        t1 = omp_get_wtime()
+        result%time_demean = max(0.0_real64, t1 - t0)
         result%tss_within = sum(host%y * host%y)
         result%dof_fes = estimate_fe_dof(group_sizes)
 
         if (n_reg > 0) then
+            t0 = omp_get_wtime()
             allocate(WW(n_reg, n_reg))
             allocate(Wy(n_reg))
             WW = matmul(transpose(host%W), host%W)
@@ -145,8 +165,9 @@ contains
             info = 0
             call lapack_solve_and_invert(WW, Wy, Q_inv, info)
             result%solver_info = info
-            call cpu_time(t0)
-            result%time_regression = t0 - t1
+            t1 = omp_get_wtime()
+            result%time_regression = max(0.0_real64, t1 - t0)
+            t0 = omp_get_wtime()
 
             if (info /= 0) then
                 if (allocated(WW)) deallocate(WW)
@@ -184,8 +205,8 @@ contains
                     result%se(i) = sqrt(max(0.0_real64, sigma2 * Q_inv(i, i)))
                 end do
             end if
-            call cpu_time(t1)
-            result%time_se = t1 - t0
+            t1 = omp_get_wtime()
+            result%time_se = max(0.0_real64, t1 - t0)
             if (allocated(residual)) deallocate(residual)
             if (allocated(WW)) deallocate(WW)
             if (allocated(Wy)) deallocate(Wy)
@@ -193,51 +214,52 @@ contains
         end if
 
         call finalize_regression_stats(result, int(n_obs, int64), n_fe > 0)
+        if (allocated(sum_y_buf)) deallocate(sum_y_buf)
+        if (allocated(sum_W_buf)) deallocate(sum_W_buf)
+        if (allocated(counts_buf)) deallocate(counts_buf)
         if (allocated(original_y)) deallocate(original_y)
 
         write(msg, '("CPU FE solver iterations=",I0,", max_update=",ES12.3)') result%fe_iterations, max_update
         call log_info(trim(msg))
     contains
-        subroutine cpu_demean_single(y_vec, W_mat, fe_ids_dim, n_groups, max_change)
+        subroutine cpu_demean_single(y_vec, W_mat, fe_ids_dim, n_groups, max_change, sum_y_buf, sum_W_buf, counts_buf)
             real(real64), intent(inout) :: y_vec(:)
             real(real64), intent(inout) :: W_mat(:, :)
             integer(int32), intent(in) :: fe_ids_dim(:)
             integer, intent(in) :: n_groups
             real(real64), intent(inout) :: max_change
-            real(real64), allocatable :: sum_y(:)
-            real(real64), allocatable :: sum_W(:, :)
-            integer, allocatable :: counts(:)
+            real(real64), intent(inout) :: sum_y_buf(:)
+            real(real64), intent(inout) :: sum_W_buf(:, :)
+            integer, intent(inout) :: counts_buf(:)
             integer :: i, j, g, n, kcols
 
             n = size(y_vec)
             kcols = size(W_mat, 2)
             if (n_groups <= 0) return
-            allocate(sum_y(n_groups))
-            allocate(sum_W(n_groups, kcols))
-            allocate(counts(n_groups))
-            sum_y = 0.0_real64
-            sum_W = 0.0_real64
-            counts = 0
-!$omp parallel do default(shared) private(i,g,j) reduction(+:sum_y,sum_W,counts)
+            sum_y_buf(1:n_groups) = 0.0_real64
+            counts_buf(1:n_groups) = 0
+            sum_W_buf = 0.0_real64
+            if (kcols > 0) sum_W_buf(1:n_groups, 1:kcols) = 0.0_real64
+!$omp parallel do default(shared) private(i,g,j) reduction(+:sum_y_buf,sum_W_buf,counts_buf)
             do i = 1, n
                 g = fe_ids_dim(i)
                 if (g < 1 .or. g > n_groups) cycle
-                sum_y(g) = sum_y(g) + y_vec(i)
-                counts(g) = counts(g) + 1
+                sum_y_buf(g) = sum_y_buf(g) + y_vec(i)
+                counts_buf(g) = counts_buf(g) + 1
                 do j = 1, kcols
-                    sum_W(g, j) = sum_W(g, j) + W_mat(i, j)
+                    sum_W_buf(g, j) = sum_W_buf(g, j) + W_mat(i, j)
                 end do
             end do
 
             do g = 1, n_groups
-                if (counts(g) > 0) then
-                    sum_y(g) = sum_y(g) / counts(g)
+                if (counts_buf(g) > 0) then
+                    sum_y_buf(g) = sum_y_buf(g) / counts_buf(g)
                     do j = 1, kcols
-                        sum_W(g, j) = sum_W(g, j) / counts(g)
+                        sum_W_buf(g, j) = sum_W_buf(g, j) / counts_buf(g)
                     end do
                 else
-                    sum_y(g) = 0.0_real64
-                    sum_W(g, :) = 0.0_real64
+                    sum_y_buf(g) = 0.0_real64
+                    if (kcols > 0) sum_W_buf(g, :) = 0.0_real64
                 end if
             end do
 
@@ -245,15 +267,13 @@ contains
             do i = 1, n
                 g = fe_ids_dim(i)
                 if (g < 1 .or. g > n_groups) cycle
-                y_vec(i) = y_vec(i) - sum_y(g)
-                max_change = max(max_change, abs(sum_y(g)))
+                y_vec(i) = y_vec(i) - sum_y_buf(g)
+                max_change = max(max_change, abs(sum_y_buf(g)))
                 do j = 1, kcols
-                    W_mat(i, j) = W_mat(i, j) - sum_W(g, j)
-                    max_change = max(max_change, abs(sum_W(g, j)))
+                    W_mat(i, j) = W_mat(i, j) - sum_W_buf(g, j)
+                    max_change = max(max_change, abs(sum_W_buf(g, j)))
                 end do
             end do
-
-            deallocate(sum_y, sum_W, counts)
         end subroutine cpu_demean_single
 
         function compute_rss(y_vec, W_mat, beta_vec) result(out)
@@ -423,6 +443,7 @@ contains
 
                 allocate(scores(n_clusters, n_reg_local))
                 scores = 0.0_real64
+!$omp parallel do default(shared) private(obs,j) reduction(+:scores)
                 do obs = 1, size(residual_vec)
                     if (combo_ids(obs) < 1 .or. combo_ids(obs) > n_clusters) cycle
                     do j = 1, n_reg_local
